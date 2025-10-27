@@ -1,4 +1,11 @@
 from __future__ import annotations
+import requests
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+import base64
+import re
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from typing import Optional, Tuple
 
@@ -48,7 +55,7 @@ def _login_wizard() -> None:
         ).execute()
 
         _save_credentials(std_id.strip(), password)
-        typer.secho("키링에 자격 증명이 저장되었습니다.", fg=typer.colors.GREEN)
+        typer.secho("아이디 비밀번호 저장 완료", fg=typer.colors.GREEN)
     except KeyboardInterrupt:
         typer.secho("\\nCancelled by user", fg=typer.colors.YELLOW)
 
@@ -84,27 +91,39 @@ def _root(ctx: typer.Context) -> None:
 @app.command()
 def login(
     std_id: Optional[str] = typer.Option(None, "--id", "-i", help="학번(미지정 시 프롬프트)"),
-    show: bool = typer.Option(False, "--show", help="저장 후 현재 계정 표시"),
 ) -> None:
-    """학번/비밀번호를 키링에 저장합니다."""
-    if std_id is None:
-        _login_wizard()
-        return
-    # 비밀번호 프롬프트
-    try:
-        password = inquirer.secret(
-            message=f"[중앙도서관] 비밀번호 입력 (학번: {std_id}):",
-            qmark="[?]",
-            validate=lambda x: len(x) > 0 or "비밀번호는 필수입니다.",
-        ).execute()
-    except KeyboardInterrupt:
-        typer.secho("\\nCancelled by user", fg=typer.colors.YELLOW)
-        raise typer.Exit(1)
+    """
+    학번/비밀번호로 중앙도서관에 로그인하고, 성공 시 키링에 저장합니다.
+    로그인에 성공할 때까지 반복 입력을 지원합니다.
+    """
+    while True:
+        try:
+            if std_id is None:
+                input_id = inquirer.text(
+                    message="[중앙도서관] 학번을 입력하세요:",
+                    qmark="[?]",
+                    validate=lambda x: len(x.strip()) > 0 or "학번은 필수입니다.",
+                ).execute()
+            else:
+                input_id = std_id
+            password = inquirer.secret(
+                message=f"[중앙도서관] 비밀번호 입력 (학번: {input_id}):",
+                qmark="[?]",
+                validate=lambda x: len(x) > 0 or "비밀번호는 필수입니다.",
+            ).execute()
+        except KeyboardInterrupt:
+            typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
 
-    _save_credentials(std_id.strip(), password)
-    typer.secho("키링에 자격 증명이 저장되었습니다.", fg=typer.colors.GREEN)
-    if show:
-        whoami()
+        # Perform login
+        cookie = _perform_login(input_id.strip(), password)
+        if cookie:
+            typer.secho("로그인 성공! 키링에 자격 증명이 저장되었습니다.", fg=typer.colors.GREEN)
+            _save_credentials(input_id.strip(), password)
+            raise typer.Exit(0)
+        else:
+            typer.secho("다시 시도하세요.", fg=typer.colors.YELLOW)
+            std_id = None  # Always prompt for ID again after failure
 
 @app.command()
 def whoami() -> None:
@@ -125,6 +144,38 @@ def logout() -> None:
 
 def main() -> None:
     app()
+
+def _perform_login(std_id: str, password: str) -> Optional[str]:
+    try:
+        session = requests.Session()
+        res = session.get("https://lib.khu.ac.kr/login", verify=False)
+        cookie = res.headers.get("Set-Cookie", "")
+        match = re.search(r"encrypt\.setPublicKey\('([^']+)'", res.text)
+        if not match:
+            typer.secho("공개키를 가져올 수 없습니다.", fg=typer.colors.RED)
+            return None
+        pub_key = match.group(1)
+        rsa_key = RSA.importKey(f"-----BEGIN PUBLIC KEY-----\n{pub_key}\n-----END PUBLIC KEY-----")
+        cipher = PKCS1_v1_5.new(rsa_key)
+        enc_id = base64.b64encode(cipher.encrypt(std_id.encode())).decode()
+        enc_pw = base64.b64encode(cipher.encrypt(password.encode())).decode()
+        res = session.post(
+            "https://lib.khu.ac.kr/login",
+            data={"encId": enc_id, "encPw": enc_pw, "autoLoginChk": "N"},
+            headers={"Cookie": cookie, "User-Agent": "libgo/cli"},
+            verify=False,
+            allow_redirects=True,
+        )
+        if '<p class="userName">' not in res.text:
+            typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
+            return None
+        cookie_value = res.headers.get("Set-Cookie") or "; ".join(
+            [f"{k}={v}" for k, v in session.cookies.get_dict().items()]
+        )
+        return cookie_value
+    except Exception as e:
+        typer.secho(f"로그인 요청 중 오류 발생: {e}", fg=typer.colors.RED)
+        return None
 
 if __name__ == "__main__":
     main()
