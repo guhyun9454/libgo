@@ -14,10 +14,11 @@ dependencies = [
     "keyring>=24.0",
     "requests>=2.31",
     "pycryptodome>=3.19",
+    "tqdm>=4.67",
 ]
 
 [project.scripts]
-libgo = "libgo.libgo:main"
+libgo = "libgo.libgo:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

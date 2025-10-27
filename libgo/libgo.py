@@ -79,7 +79,8 @@ def menu() -> None:
                 message="메뉴 선택 (↕:이동, Enter:선택)",
                 choices=[
                     "로그인",
-                    "내 좌석 현황",
+                    "내 좌석 정보",
+                    "실시간 좌석 현황",
                     "로그아웃",
                     "나가기",
                 ],
@@ -101,8 +102,10 @@ def menu() -> None:
                         typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
                 else:
                     typer.secho("저장된 로그인 정보가 없습니다.", fg=typer.colors.RED)
-            elif choice == "내 좌석 현황":
+            elif choice == "내 좌석 정보":
                 status()
+            elif choice == "실시간 좌석 현황":
+                seats()
             elif choice == "로그아웃":
                 logout()
             elif choice == "나가기":
@@ -175,7 +178,7 @@ def status() -> None:
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        typer.secho(f"\n=== 📚 내 좌석 현황 ({now_str} 기준) ===", fg=typer.colors.CYAN, bold=True)
+        typer.secho(f"\n=== 📚 내 좌석 정보 ({now_str} 기준) ===", fg=typer.colors.CYAN, bold=True)
         lines = [
             f"캠퍼스     : {campus_name}",
             f"열람실     : {room_name}",
@@ -197,6 +200,57 @@ def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         menu()
 
+@app.command()
+def seats() -> None:
+    """
+    중앙도서관 열람실별 남은 좌석 수를 실시간으로 표시합니다.
+    """
+    try:
+        credentials = _get_credentials()
+        if not credentials:
+            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+
+        std_id, password = credentials
+        cookie = _perform_login(std_id, password)
+        if not cookie:
+            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        rooms = {
+            8: "1F 제1열람실",
+            9: "2F 제2열람실",
+            10: "1F      벗터",
+            11: "2F      혜윰",
+        }
+
+        typer.secho("\n=== 🪑 실시간 열람실 좌석 현황 ===\n", fg=typer.colors.CYAN, bold=True)
+
+        for room_id in [8, 10, 11, 9]:
+            room_name = rooms[room_id]
+            url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
+            res = requests.get(
+                url,
+                headers={
+                    "Cookie": cookie,
+                    "User-Agent": _ua(),
+                    "Accept": "application/json",
+                },
+                verify=False,
+            )
+
+            if res.status_code != 200:
+                typer.secho(f"[{room_name}] 조회 실패 ({res.status_code})", fg=typer.colors.RED)
+                continue
+
+            data = res.json().get("data", [])
+            total = len(data)
+            available = sum(1 for s in data if s.get("seatTime") is None)
+            available_percent = (available / total) * 100 if total > 0 else 0.0
+            typer.echo(f"[{room_name}] {available:>4} / {total:<4} ({int(round(available_percent))}%)")
+
+    except Exception as e:
+        typer.secho(f"좌석 정보를 불러오는 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
 @app.command()
 def whoami() -> None:
