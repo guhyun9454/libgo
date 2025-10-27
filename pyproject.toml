@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libgo"
+version = "0.1.0"
+description = "경희대 중앙도서관 CLI"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "typer>=0.9",
+    "InquirerPy>=0.3",
+    "keyring>=24.0",
+]
+
+[project.scripts]
+libgo = "libgo.libgo:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
