@@ -18,6 +18,14 @@ app = typer.Typer(help="경희대 중앙도서관 CLI")
 SERVICE = "khu-library"  
 ID_KEY = "default_id"    
 
+MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+)
+
+def _ua() -> str:
+    return MOBILE_UA
+
 def _save_credentials(std_id: str, password: str) -> None:
     keyring.set_password(SERVICE, ID_KEY, std_id)
     keyring.set_password(SERVICE, std_id, password)
@@ -150,7 +158,11 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         session = requests.Session()
 
         # 1. 공개키 가져오기
-        res = session.get("https://lib.khu.ac.kr/login", verify=False)
+        res = session.get(
+            "https://lib.khu.ac.kr/login",
+            headers={"User-Agent": _ua()},
+            verify=False,
+        )
         cookie = res.headers.get("Set-Cookie", "")
         match = re.search(r"encrypt\.setPublicKey\('([^']+)'", res.text)
         if not match:
@@ -167,7 +179,7 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         res = session.post(
             "https://lib.khu.ac.kr/login",
             data={"encId": enc_id, "encPw": enc_pw, "autoLoginChk": "N"},
-            headers={"Cookie": cookie, "User-Agent": "libgo/cli"},
+            headers={"Cookie": cookie, "User-Agent": _ua()},
             verify=False,
             allow_redirects=True,
         )
@@ -178,7 +190,11 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         lib_cookie = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
 
         # 3. mid_user_id 가져오기
-        res_mid = session.get("https://lib.khu.ac.kr/relation/mobileCard", headers={"Cookie": lib_cookie}, verify=False)
+        res_mid = session.get(
+            "https://lib.khu.ac.kr/relation/mobileCard",
+            headers={"Cookie": lib_cookie, "User-Agent": _ua()},
+            verify=False,
+        )
         match_mid = re.search(r'name="mid_user_id" value="([^"]+)"', res_mid.text)
         if not match_mid:
             typer.secho("❌ mid_user_id를 가져올 수 없습니다.", fg=typer.colors.RED)
@@ -189,7 +205,7 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         seat_res = session.post(
             "https://libseat.khu.ac.kr/login_library",
             data={"STD_ID": std_id},
-            headers={"Cookie": lib_cookie, "User-Agent": "libgo/cli"},
+            headers={"Cookie": lib_cookie, "User-Agent": _ua()},
             verify=False,
             allow_redirects=False,
         )
