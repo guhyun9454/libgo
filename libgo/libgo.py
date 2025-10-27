@@ -8,10 +8,13 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from typing import Optional, Tuple
+from datetime import datetime
+import time
 
 import typer
 from InquirerPy import inquirer
 import keyring
+import json
 
 app = typer.Typer(help="경희대 중앙도서관 CLI")
 
@@ -75,6 +78,7 @@ def menu() -> None:
             message="메뉴 선택 (↕:이동, Enter:선택)",
             choices=[
                 "로그인 설정",
+                "내 좌석 현황",
                 "나가기",
             ],
             default="로그인 설정",
@@ -84,12 +88,94 @@ def menu() -> None:
 
         if choice == "로그인 설정":
             _login_wizard()
+        elif choice == "내 좌석 현황":
+            status()
         elif choice == "나가기":
             raise typer.Exit(0)
         else:
             typer.echo("아직 구현되지 않은 항목입니다.")
     except KeyboardInterrupt:
         typer.secho("\nAborted!", fg=typer.colors.RED)
+@app.command()
+def status() -> None:
+    """
+    LibSeat 내 좌석 현황(마이페이지) 정보를 출력합니다.
+    """
+    try:
+        credentials = _get_credentials()
+        if not credentials:
+            typer.secho("저장된 로그인 정보가 없습니다. `libgo login`을 실행하세요.", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+        std_id, password = credentials
+        cookie = _perform_login(std_id, password)
+        if not cookie:
+            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        res = requests.get(
+            "https://libseat.khu.ac.kr/user/my-status",
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+            },
+            verify=False,
+        )
+        res.raise_for_status()
+        try:
+            data = res.json()
+        except Exception as e:
+            typer.secho(f"JSON 파싱 오류: {e}", fg=typer.colors.RED)
+            typer.echo(res.text)
+            raise typer.Exit(1)
+
+        my_seat = data.get("data", {}).get("mySeat")
+        if not my_seat:
+            typer.echo("현재 이용 중인 좌석이 없습니다.")
+            return
+
+        seat = my_seat.get("seat", {})
+        seat_name = seat.get("name", "알 수 없음")
+        group = seat.get("group", {})
+        room_name = group.get("name", "알 수 없음")
+        class_group = group.get("classGroup", {})
+        campus_name = class_group.get("name", "알 수 없음")
+
+        enter_time_ms = my_seat.get("inTime")
+        expire_time_ms = my_seat.get("expireTime")
+        state = my_seat.get("state")
+
+        def format_time(ms: int) -> str:
+            return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+
+        enter_time_str = format_time(enter_time_ms) if enter_time_ms else "알 수 없음"
+        expire_time_str = format_time(expire_time_ms) if expire_time_ms else "알 수 없음"
+        status_str = "이용 중" if state == 5 else "퇴실 또는 종료"
+
+        remaining_time_str = "알 수 없음"
+        if expire_time_ms:
+            remaining_minutes = int((expire_time_ms / 1000 - time.time()) / 60)
+            if remaining_minutes < 0:
+                remaining_minutes = 0
+            remaining_time_str = f"{remaining_minutes}분"
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        typer.secho(f"\n=== 📚 내 좌석 현황 ({now_str} 기준) ===", fg=typer.colors.CYAN, bold=True)
+        lines = [
+            f"캠퍼스     : {campus_name}",
+            f"열람실     : {room_name}",
+            f"좌석 번호  : {seat_name}",
+            f"입실 시간  : {enter_time_str}",
+            f"만료 시간  : {expire_time_str}",
+            f"상태       : {status_str}",
+            f"남은 시간  : {remaining_time_str}",
+        ]
+
+        for line in lines:
+            typer.echo(line)
+
+    except Exception as e:
+        typer.secho(f"상태 조회 중 오류: {e}", fg=typer.colors.RED)
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
