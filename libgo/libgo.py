@@ -57,7 +57,7 @@ def _login_wizard() -> None:
         _save_credentials(std_id.strip(), password)
         typer.secho("아이디 비밀번호 저장 완료", fg=typer.colors.GREEN)
     except KeyboardInterrupt:
-        typer.secho("\\nCancelled by user", fg=typer.colors.YELLOW)
+        typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
 
 @app.command()
 def menu() -> None:
@@ -81,7 +81,7 @@ def menu() -> None:
         else:
             typer.echo("아직 구현되지 않은 항목입니다.")
     except KeyboardInterrupt:
-        typer.secho("\\nAborted!", fg=typer.colors.RED)
+        typer.secho("\nAborted!", fg=typer.colors.RED)
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
@@ -118,12 +118,12 @@ def login(
         # Perform login
         cookie = _perform_login(input_id.strip(), password)
         if cookie:
-            typer.secho("로그인 성공! 키링에 자격 증명이 저장되었습니다.", fg=typer.colors.GREEN)
+            typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
             _save_credentials(input_id.strip(), password)
             raise typer.Exit(0)
         else:
             typer.secho("다시 시도하세요.", fg=typer.colors.YELLOW)
-            std_id = None  # Always prompt for ID again after failure
+            std_id = None  
 
 @app.command()
 def whoami() -> None:
@@ -148,17 +148,22 @@ def main() -> None:
 def _perform_login(std_id: str, password: str) -> Optional[str]:
     try:
         session = requests.Session()
+
+        # 1. 공개키 가져오기
         res = session.get("https://lib.khu.ac.kr/login", verify=False)
         cookie = res.headers.get("Set-Cookie", "")
         match = re.search(r"encrypt\.setPublicKey\('([^']+)'", res.text)
         if not match:
             typer.secho("공개키를 가져올 수 없습니다.", fg=typer.colors.RED)
             return None
+
         pub_key = match.group(1)
         rsa_key = RSA.importKey(f"-----BEGIN PUBLIC KEY-----\n{pub_key}\n-----END PUBLIC KEY-----")
         cipher = PKCS1_v1_5.new(rsa_key)
         enc_id = base64.b64encode(cipher.encrypt(std_id.encode())).decode()
         enc_pw = base64.b64encode(cipher.encrypt(password.encode())).decode()
+
+        # 2. 중앙도서관 로그인
         res = session.post(
             "https://lib.khu.ac.kr/login",
             data={"encId": enc_id, "encPw": enc_pw, "autoLoginChk": "N"},
@@ -169,10 +174,35 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         if '<p class="userName">' not in res.text:
             typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
             return None
-        cookie_value = res.headers.get("Set-Cookie") or "; ".join(
-            [f"{k}={v}" for k, v in session.cookies.get_dict().items()]
+
+        lib_cookie = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
+
+        # 3. mid_user_id 가져오기
+        res_mid = session.get("https://lib.khu.ac.kr/relation/mobileCard", headers={"Cookie": lib_cookie}, verify=False)
+        match_mid = re.search(r'name="mid_user_id" value="([^"]+)"', res_mid.text)
+        if not match_mid:
+            typer.secho("❌ mid_user_id를 가져올 수 없습니다.", fg=typer.colors.RED)
+            return None
+        mid_user_id = match_mid.group(1)
+
+        # 4. LibSeat 로그인
+        seat_res = session.post(
+            "https://libseat.khu.ac.kr/login_library",
+            data={"STD_ID": std_id},
+            headers={"Cookie": lib_cookie, "User-Agent": "libgo/cli"},
+            verify=False,
+            allow_redirects=False,
         )
-        return cookie_value
+
+        libseat_cookie = seat_res.headers.get("Set-Cookie")
+
+        if not libseat_cookie:
+            typer.secho(f"❌ LibSeat 로그인 실패 (상태 코드 {seat_res.status_code}) — 쿠키 없음", fg=typer.colors.RED)
+            return lib_cookie
+
+        combined_cookie = f"{lib_cookie}; {libseat_cookie}"
+        return combined_cookie
+
     except Exception as e:
         typer.secho(f"로그인 요청 중 오류 발생: {e}", fg=typer.colors.RED)
         return None
