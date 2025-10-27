@@ -72,28 +72,43 @@ def _login_wizard() -> None:
 
 @app.command()
 def menu() -> None:
-    """간단한 메뉴(UI 레퍼런스와 유사)"""
+    """중앙도서관 CLI 인터랙티브 메뉴"""
     try:
-        choice = inquirer.select(
-            message="메뉴 선택 (↕:이동, Enter:선택)",
-            choices=[
-                "로그인 설정",
-                "내 좌석 현황",
-                "나가기",
-            ],
-            default="로그인 설정",
-            qmark="[?]",
-            pointer=">",
-        ).execute()
+        while True:
+            choice = inquirer.select(
+                message="메뉴 선택 (↕:이동, Enter:선택)",
+                choices=[
+                    "로그인",
+                    "내 좌석 현황",
+                    "로그아웃",
+                    "나가기",
+                ],
+                default="로그인",
+                qmark="[?]",
+                pointer=">",
+            ).execute()
 
-        if choice == "로그인 설정":
-            _login_wizard()
-        elif choice == "내 좌석 현황":
-            status()
-        elif choice == "나가기":
-            raise typer.Exit(0)
-        else:
-            typer.echo("아직 구현되지 않은 항목입니다.")
+            if choice == "로그인":
+                _login_wizard()
+                # 로그인 입력 후 즉시 로그인 시도
+                creds = _get_credentials()
+                if creds:
+                    std_id, password = creds
+                    cookie = _perform_login(std_id, password)
+                    if cookie:
+                        typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
+                    else:
+                        typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
+                else:
+                    typer.secho("저장된 로그인 정보가 없습니다.", fg=typer.colors.RED)
+            elif choice == "내 좌석 현황":
+                status()
+            elif choice == "로그아웃":
+                logout()
+            elif choice == "나가기":
+                raise typer.Exit(0)
+            else:
+                typer.echo("아직 구현되지 않은 항목입니다.")
     except KeyboardInterrupt:
         typer.secho("\nAborted!", fg=typer.colors.RED)
 @app.command()
@@ -104,7 +119,7 @@ def status() -> None:
     try:
         credentials = _get_credentials()
         if not credentials:
-            typer.secho("저장된 로그인 정보가 없습니다. `libgo login`을 실행하세요.", fg=typer.colors.YELLOW)
+            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
             raise typer.Exit(1)
         std_id, password = credentials
         cookie = _perform_login(std_id, password)
@@ -175,49 +190,13 @@ def status() -> None:
             typer.echo(line)
 
     except Exception as e:
-        typer.secho(f"상태 조회 중 오류: {e}", fg=typer.colors.RED)
+        typer.secho("좌석 정보를 불러오는 중 오류가 발생했습니다.", fg=typer.colors.RED)
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         menu()
 
-@app.command()
-def login(
-    std_id: Optional[str] = typer.Option(None, "--id", "-i", help="학번(미지정 시 프롬프트)"),
-) -> None:
-    """
-    학번/비밀번호로 중앙도서관에 로그인하고, 성공 시 키링에 저장합니다.
-    로그인에 성공할 때까지 반복 입력을 지원합니다.
-    """
-    while True:
-        try:
-            if std_id is None:
-                input_id = inquirer.text(
-                    message="[중앙도서관] 학번을 입력하세요:",
-                    qmark="[?]",
-                    validate=lambda x: len(x.strip()) > 0 or "학번은 필수입니다.",
-                ).execute()
-            else:
-                input_id = std_id
-            password = inquirer.secret(
-                message=f"[중앙도서관] 비밀번호 입력 (학번: {input_id}):",
-                qmark="[?]",
-                validate=lambda x: len(x) > 0 or "비밀번호는 필수입니다.",
-            ).execute()
-        except KeyboardInterrupt:
-            typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
-
-        # Perform login
-        cookie = _perform_login(input_id.strip(), password)
-        if cookie:
-            typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
-            _save_credentials(input_id.strip(), password)
-            raise typer.Exit(0)
-        else:
-            typer.secho("다시 시도하세요.", fg=typer.colors.YELLOW)
-            std_id = None  
 
 @app.command()
 def whoami() -> None:
