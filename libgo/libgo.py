@@ -30,15 +30,22 @@ def _ua() -> str:
     return MOBILE_UA
 
 def _save_credentials(std_id: str, password: str) -> None:
-    keyring.set_password(SERVICE, ID_KEY, std_id)
-    keyring.set_password(SERVICE, std_id, password)
+    try:
+        keyring.set_password(SERVICE, ID_KEY, std_id)
+        keyring.set_password(SERVICE, std_id, password)
+    except (keyring.errors.PasswordSetError, keyring.errors.KeyringLocked, keyring.errors.KeyringError) as e:
+        typer.secho(f"keyring에 자격 증명 저장 실패: {e}", fg=typer.colors.RED)
+        raise
 
 def _get_credentials() -> Optional[Tuple[str, Optional[str]]]:
-    std_id = keyring.get_password(SERVICE, ID_KEY)
-    if not std_id:
+    try:
+        std_id = keyring.get_password(SERVICE, ID_KEY)
+        if not std_id:
+            return None
+        pw = keyring.get_password(SERVICE, std_id)
+        return std_id, pw
+    except Exception:
         return None
-    pw = keyring.get_password(SERVICE, std_id)
-    return std_id, pw
 
 def _delete_credentials() -> None:
     try:
@@ -49,8 +56,9 @@ def _delete_credentials() -> None:
             except keyring.errors.PasswordDeleteError:
                 pass
         keyring.delete_password(SERVICE, ID_KEY)
-    except keyring.errors.PasswordDeleteError:
-        pass
+        typer.secho("keyring에서 자격 증명을 삭제했습니다.", fg=typer.colors.GREEN)
+    except Exception:
+        typer.secho("keyring에서 자격 증명 삭제 실패 또는 자격 증명 없음.", fg=typer.colors.YELLOW)
 
 def _login_wizard() -> None:
     try:
