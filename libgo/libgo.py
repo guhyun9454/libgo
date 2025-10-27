@@ -18,7 +18,7 @@ import json
 
 app = typer.Typer(help="경희대 중앙도서관 CLI")
 
-SERVICE = "khu-library"  
+SERVICE = "libgo"  
 ID_KEY = "default_id"    
 
 MOBILE_UA = (
@@ -60,7 +60,7 @@ def _delete_credentials() -> None:
     except Exception:
         typer.secho("keyring에서 자격 증명 삭제 실패 또는 자격 증명 없음.", fg=typer.colors.YELLOW)
 
-def _login_wizard() -> None:
+def _login_wizard() -> Optional[Tuple[str, str]]:
     try:
         std_id = inquirer.text(
             message="[중앙도서관] 학번을 입력하세요:",
@@ -75,8 +75,10 @@ def _login_wizard() -> None:
 
         _save_credentials(std_id.strip(), password)
         typer.secho("아이디 비밀번호 저장 완료", fg=typer.colors.GREEN)
+        return std_id.strip(), password
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+        return None
 
 @app.command()
 def menu() -> None:
@@ -98,14 +100,20 @@ def menu() -> None:
             ).execute()
 
             if choice == "로그인":
-                _login_wizard()
-                # 로그인 입력 후 즉시 로그인 시도
                 creds = _get_credentials()
+                if creds:
+                    from_keyring = True
+                else:
+                    from_keyring = False
+                    creds = _login_wizard()
                 if creds:
                     std_id, password = creds
                     cookie = _perform_login(std_id, password)
                     if cookie:
-                        typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
+                        if from_keyring:
+                            typer.secho(f"이미 로그인되어 있습니다. (학번: {std_id})", fg=typer.colors.GREEN)
+                        else:
+                            typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
                     else:
                         typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
                 else:
