@@ -251,37 +251,85 @@ def status() -> None:
 
         enter_time_ms = my_seat.get("inTime")
         expire_time_ms = my_seat.get("expireTime")
+        confirm_time_ms = my_seat.get("confirmTime")
+        count_down_time_ms = my_seat.get("countDownTime")
+        out_time_ms = my_seat.get("outTime")
         state = my_seat.get("state")
 
         def format_time(ms: int) -> str:
             return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
 
+        confirm_time_str = format_time(confirm_time_ms) if confirm_time_ms else "알 수 없음"
+        count_down_time_str = format_time(count_down_time_ms) if count_down_time_ms else "알 수 없음"
         enter_time_str = format_time(enter_time_ms) if enter_time_ms else "알 수 없음"
         expire_time_str = format_time(expire_time_ms) if expire_time_ms else "알 수 없음"
-        status_str = "이용 중" if state == 5 else "퇴실 또는 종료"
 
-        remaining_time_str = "알 수 없음"
-        if expire_time_ms:
-            remaining_minutes = int((expire_time_ms / 1000 - time.time()) / 60)
+        # 상태 문자열 매핑: 예약 완료(입실 대기)와 이용 중을 구분해서 표시
+        if state == 5 and enter_time_ms:
+            status_str = "이용 중"
+        elif state == 0 and enter_time_ms is None and out_time_ms is None:
+            status_str = "입실 대기(예약 완료)"
+        else:
+            status_str = "퇴실 또는 종료"
+
+        # 남은 시간 및 마감(입실 마감/만료) 정보 계산
+        now_ts = time.time()
+        deadline_label: Optional[str] = None
+        deadline_time_ms: Optional[int] = None
+        remaining_minutes: Optional[int] = None
+
+        # 입실 전이면 입실 마감 시간, 입실 후면 만료 시간을 기준으로 삼는다.
+        if state == 0 and enter_time_ms is None and count_down_time_ms:
+            deadline_label = "입실 마감"
+            deadline_time_ms = count_down_time_ms
+        elif expire_time_ms:
+            deadline_label = "만료"
+            deadline_time_ms = expire_time_ms
+
+        deadline_line = None
+        if deadline_label and deadline_time_ms:
+            remaining_minutes = int((deadline_time_ms / 1000 - now_ts) / 60)
             if remaining_minutes < 0:
                 remaining_minutes = 0
-            remaining_time_str = f"{remaining_minutes}분"
+            deadline_time_str = format_time(deadline_time_ms)
+            # 예: "입실 마감  : 2025-11-24 20:49 (23분 남음)"
+            deadline_line = f"{deadline_label}  : {deadline_time_str} ({remaining_minutes}분 남음)"
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         typer.secho(f"\n=== 📚 내 좌석 정보 ({now_str} 기준) ===", fg=typer.colors.CYAN, bold=True)
+
+        # 기본 정보
         lines = [
             f"캠퍼스     : {campus_name}",
             f"열람실     : {room_name}",
             f"좌석 번호  : {seat_name}",
-            f"입실 시간  : {enter_time_str}",
-            f"만료 시간  : {expire_time_str}",
-            f"상태       : {status_str}",
-            f"남은 시간  : {remaining_time_str}",
+            f"예약 시간  : {confirm_time_str}",
         ]
+
+        # 실제 입실한 경우에만 입실 시간 표기
+        if state == 5 and enter_time_ms:
+            lines.append(f"입실 시간  : {enter_time_str}")
+
+        # 상태는 항상 표시
+        lines.append(f"상태       : {status_str}")
 
         for line in lines:
             typer.echo(line)
+
+        # 입실 마감/만료 라인은 색상으로 강조해서 출력
+        if deadline_line is not None and remaining_minutes is not None:
+            # 남은 시간에 따라 색상 구분 (5분 이내: 빨강, 15분 이내: 노랑, 그 외: 초록)
+            if remaining_minutes <= 5:
+                color = typer.colors.RED
+            elif remaining_minutes <= 15:
+                color = typer.colors.YELLOW
+            else:
+                color = typer.colors.GREEN
+            typer.secho(deadline_line, fg=color, bold=True)
+        elif deadline_line is not None:
+            # 남은 시간을 계산하지 못했을 때는 기본 색상으로만 표시
+            typer.secho(deadline_line, bold=True)
 
     except Exception as e:
         typer.secho("좌석 정보를 불러오는 중 오류가 발생했습니다.", fg=typer.colors.RED)
