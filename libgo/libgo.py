@@ -630,7 +630,7 @@ def reserve() -> None:
         minutes_str = inquirer.text(
             message="이용 시간(분)을 입력하세요:",
             qmark="[?]",
-            default="60",
+            default="240",
             validate=lambda x: (x.isdigit() and int(x) > 0) or "양의 정수를 입력하세요.",
         ).execute()
         minutes = int(minutes_str)
