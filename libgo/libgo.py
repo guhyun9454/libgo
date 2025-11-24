@@ -213,7 +213,7 @@ def status() -> None:
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
+            return
         std_id, password = credentials
         cookie = _get_or_login_cookie(std_id, password)
         if not cookie:
@@ -334,6 +334,8 @@ def status() -> None:
             # 남은 시간을 계산하지 못했을 때는 기본 색상으로만 표시
             typer.secho(deadline_line, bold=True)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.secho("좌석 정보를 불러오는 중 오류가 발생했습니다.", fg=typer.colors.RED)
 
@@ -401,7 +403,7 @@ def seats() -> None:
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
+            return
 
         std_id, password = credentials
         cookie = _get_or_login_cookie(std_id, password)
@@ -437,6 +439,8 @@ def seats() -> None:
             )
             typer.echo(f"[{room_name}] {available:>4} / {total:<4} ({int(round(available_percent))}%)")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.secho(f"좌석 정보를 불러오는 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
@@ -647,7 +651,7 @@ def reserve() -> None:
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
+            return
 
         std_id, password = credentials
         cookie = _get_or_login_cookie(std_id, password)
@@ -869,7 +873,7 @@ def leave() -> None:
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
+            return
 
         std_id, password = credentials
         cookie = _get_or_login_cookie(std_id, password)
