@@ -15,6 +15,8 @@ import typer
 from InquirerPy import inquirer
 import keyring
 import json
+import logging
+from pathlib import Path
 
 app = typer.Typer(help="경희대 중앙도서관 CLI")
 
@@ -32,6 +34,26 @@ ROOMS = {
     10: "1F      벗터",
     11: "2F      혜윰",
 }
+
+LOG_DIR = Path.home() / ".libgo"
+LOG_FILE = LOG_DIR / "libgo.log"
+
+
+def _get_logger() -> logging.Logger:
+    logger = logging.getLogger("libgo")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+    return logger
+
+
+LOGGER = _get_logger()
+
 
 def _ua() -> str:
     return MOBILE_UA
@@ -123,6 +145,8 @@ def menu() -> None:
                 pointer=">",
             ).execute()
 
+            LOGGER.info(f"menu choice: {choice}")
+
             if choice == "로그인":
                 creds = _get_credentials()
                 from_keyring = creds is not None
@@ -167,6 +191,7 @@ def status() -> None:
     LibSeat 내 좌석 현황(마이페이지) 정보를 출력합니다.
     """
     try:
+        LOGGER.info("status command called")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -193,10 +218,14 @@ def status() -> None:
             typer.echo(res.text)
             raise typer.Exit(1)
 
+        LOGGER.info(f"status raw data: {json.dumps(data, ensure_ascii=False)[:1000]}")
+
         my_seat = data.get("data", {}).get("mySeat")
         if not my_seat:
             typer.echo("현재 이용 중인 좌석이 없습니다.")
             return
+
+        LOGGER.info(f"status mySeat: {json.dumps(my_seat, ensure_ascii=False)}")
 
         seat = my_seat.get("seat", {})
         seat_name = seat.get("name", "알 수 없음")
@@ -253,6 +282,7 @@ def seats() -> None:
     중앙도서관 열람실별 남은 좌석 수를 실시간으로 표시합니다.
     """
     try:
+        LOGGER.info("seats command called")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -287,6 +317,9 @@ def seats() -> None:
             total = len(data)
             available = sum(1 for s in data if s.get("seatTime") is None)
             available_percent = (available / total) * 100 if total > 0 else 0.0
+            LOGGER.info(
+                f"seats room={room_name}, total={total}, available={available}, available_percent={available_percent:.1f}"
+            )
             typer.echo(f"[{room_name}] {available:>4} / {total:<4} ({int(round(available_percent))}%)")
 
     except Exception as e:
@@ -301,8 +334,10 @@ def _pick_seat(cookie: str) -> Optional[str]:
         qmark="[?]",
         pointer=">",
     ).execute()
+    LOGGER.info(f"_pick_seat room_choice: {room_choice}")
     try:
         room_id = int(room_choice.split(" — ")[0])
+        LOGGER.info(f"_pick_seat parsed room_id: {room_id}")
     except Exception:
         typer.secho("열람실 선택 파싱 실패", fg=typer.colors.RED)
         return None
@@ -324,6 +359,7 @@ def _pick_seat(cookie: str) -> Optional[str]:
 
     try:
         seats_data = res.json().get("data", [])
+        LOGGER.info(f"_pick_seat seats_data_len: {len(seats_data)}")
     except Exception as e:
         typer.secho(f"좌석 목록 JSON 파싱 실패: {e}", fg=typer.colors.RED)
         typer.echo(res.text)
@@ -337,6 +373,7 @@ def _pick_seat(cookie: str) -> Optional[str]:
         return s.get("name") or s.get("seatNo") or s.get("num") or str(_sid(s))
 
     available = [s for s in seats_data if s.get("seatTime") is None]
+    LOGGER.info(f"_pick_seat available_count: {len(available)}")
     if not available:
         typer.secho(f"[{ROOMS.get(room_id, room_id)}] 현재 예약 가능한 좌석이 없습니다.", fg=typer.colors.YELLOW)
         return None
@@ -363,8 +400,11 @@ def _pick_seat(cookie: str) -> Optional[str]:
     m = re.search(r"id:(\d+)", picked)
     if not m:
         typer.secho("좌석 선택 파싱 실패", fg=typer.colors.RED)
+        LOGGER.info(f"_pick_seat parse failure, picked={picked}")
         return None
-    return m.group(1)
+    seat_id = m.group(1)
+    LOGGER.info(f"_pick_seat picked={picked}, seat_id={seat_id}")
+    return seat_id
 
 @app.command()
 def reserve() -> None:
@@ -375,6 +415,7 @@ def reserve() -> None:
     성공 판단: 응답 JSON의 code === 1
     """
     try:
+        LOGGER.info("reserve command called")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -392,6 +433,7 @@ def reserve() -> None:
             qmark="[?]",
             pointer=">",
         ).execute()
+        LOGGER.info(f"reserve mode: {mode}")
 
         if mode == "열람실에서 선택":
             seat_id = _pick_seat(cookie) or ""
@@ -401,6 +443,8 @@ def reserve() -> None:
                 qmark="[?]",
                 validate=lambda x: len(x.strip()) > 0 or "좌석 코드는 필수입니다.",
             ).execute().strip()
+
+        LOGGER.info(f"reserve seat_id raw: {seat_id}")
 
         if not seat_id:
             typer.secho("좌석 코드가 유효하지 않습니다.", fg=typer.colors.RED)
@@ -413,6 +457,7 @@ def reserve() -> None:
             validate=lambda x: (x.isdigit() and int(x) > 0) or "양의 정수를 입력하세요.",
         ).execute()
         minutes = int(minutes_str)
+        LOGGER.info(f"reserve minutes: {minutes}")
 
         res = requests.post(
             "https://libseat.khu.ac.kr/libraries/seat",
@@ -426,6 +471,9 @@ def reserve() -> None:
             verify=False,
         )
 
+        LOGGER.info(f"reserve response status: {res.status_code}")
+        LOGGER.info(f"reserve response text: {res.text[:2000]}")
+
         try:
             data = res.json()
         except Exception:
@@ -435,6 +483,7 @@ def reserve() -> None:
 
         code = data.get("code")
         msg = data.get("msg") or data.get("message") or ""
+        LOGGER.info(f"reserve parsed response: code={code}, msg={msg}")
         # 일부 응답은 code 값이 1이 아닌데도 message가 SUCCESS로 오는 사례가 있어 보수적으로 처리
         success = (code == 1) or (str(msg).upper() == "SUCCESS")
 
@@ -477,6 +526,7 @@ def main() -> None:
     app()
 
 def _perform_login(std_id: str, password: str) -> Optional[str]:
+    LOGGER.info(f"_perform_login called for std_id={std_id}")
     try:
         session = requests.Session()
 
@@ -508,6 +558,7 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         )
         # 로그인 실패 여부는 호출한 쪽에서 메시지를 출력하도록, 여기서는 단순히 실패만 반환
         if '<p class="userName">' not in res.text:
+            LOGGER.info("_perform_login failed: userName marker not found in response HTML")
             return None
 
         lib_cookie = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
@@ -540,6 +591,7 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
             return lib_cookie
 
         combined_cookie = f"{lib_cookie}; {libseat_cookie}"
+        LOGGER.info("_perform_login success (cookies acquired)")
         return combined_cookie
 
     except Exception as e:
