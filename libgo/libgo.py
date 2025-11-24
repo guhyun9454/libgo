@@ -7,7 +7,7 @@ import re
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple
 from datetime import datetime
 import time
 
@@ -57,8 +57,6 @@ LOGGER = _get_logger()
 
 SESSION_COOKIE: Optional[str] = None
 
-# 마지막으로 확인한 좌석별 예약 종료 시각(ms). 동일 좌석 재예약 제한(1209) 안내에 사용된다.
-LAST_SEAT_EXPIRE: Dict[str, int] = {}
 
 # 현재 CLI 세션에서 사용 중인 학번(로그인 컨텍스트)
 CURRENT_STD_ID: Optional[str] = None
@@ -310,24 +308,13 @@ def status() -> None:
         def format_time(ms: int) -> str:
             return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
 
-        # 동일 좌석 재예약 제한(1209) 안내를 위해 마지막으로 본 종료 시각을 캐시한다.
-        seat_code_for_cache = (
-            seat.get("code")
-            or seat.get("seatCode")
-            or seat.get("id")
-            or seat.get("seatId")
-        )
-        if seat_code_for_cache and expire_time_ms:
-            try:
-                LAST_SEAT_EXPIRE[str(seat_code_for_cache)] = int(expire_time_ms)
-            except Exception:
-                # 캐시 실패는 치명적이지 않으므로 무시
-                pass
-
         _log(
             "STATUS",
             "mySeat parsed",
-            seatCode=seat_code_for_cache,
+            seatCode=seat.get("code")
+            or seat.get("seatCode")
+            or seat.get("id")
+            or seat.get("seatId"),
             state=state,
             room=room_name,
             seat=seat_name,
@@ -827,24 +814,6 @@ def reserve() -> None:
                     "동일 좌석 재배정 대기 중입니다.",
                     fg=typer.colors.YELLOW,
                 )
-                # 이전에 확인한 예약 종료 시각이 있다면, 남은 시간을 계산해서 안내한다.
-                try:
-                    expire_ms = LAST_SEAT_EXPIRE.get(str(seat_id))
-                except Exception:
-                    expire_ms = None
-                if expire_ms:
-                    now_ms = int(time.time() * 1000)
-                    if expire_ms > now_ms:
-                        remaining_ms = expire_ms - now_ms
-                        remaining_min = int(remaining_ms / 60_000)
-                        if remaining_min < 1:
-                            remaining_min = 1
-                        expire_str = datetime.fromtimestamp(expire_ms / 1000).strftime("%Y-%m-%d %H:%M")
-                        typer.secho(
-                            f"이 좌석의 기존 예약은 {expire_str}에 종료됩니다. "
-                            f"약 {remaining_min}분 후부터 다시 예약할 수 있습니다.",
-                            fg=typer.colors.YELLOW,
-                        )
                 LOGGER.info(
                     "reserve special case 1209 (same seat reassignment pending): raw=%s",
                     json.dumps(data, ensure_ascii=False),
