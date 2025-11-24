@@ -52,7 +52,22 @@ def _get_logger() -> logging.Logger:
     return logger
 
 
+
 LOGGER = _get_logger()
+
+SESSION_COOKIE: Optional[str] = None
+
+
+def _get_or_login_cookie(std_id: str, password: str) -> Optional[str]:
+    """캐시된 세션 쿠키가 있으면 그대로 사용하고, 없으면 로그인 절차를 거쳐 쿠키를 생성합니다."""
+    global SESSION_COOKIE
+    if SESSION_COOKIE:
+        return SESSION_COOKIE
+
+    cookie = _perform_login(std_id, password)
+    if cookie:
+        SESSION_COOKIE = cookie
+    return cookie
 
 
 def _ua() -> str:
@@ -161,7 +176,7 @@ def menu() -> None:
                     continue
 
                 std_id, password = creds
-                cookie = _perform_login(std_id, password)
+                cookie = _get_or_login_cookie(std_id, password)
                 if cookie:
                     if from_keyring:
                         typer.secho(f"이미 로그인되어 있습니다. (학번: {std_id})", fg=typer.colors.GREEN)
@@ -197,7 +212,7 @@ def status() -> None:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
             raise typer.Exit(1)
         std_id, password = credentials
-        cookie = _perform_login(std_id, password)
+        cookie = _get_or_login_cookie(std_id, password)
         if not cookie:
             typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -289,7 +304,7 @@ def seats() -> None:
             raise typer.Exit(1)
 
         std_id, password = credentials
-        cookie = _perform_login(std_id, password)
+        cookie = _get_or_login_cookie(std_id, password)
         if not cookie:
             typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -535,7 +550,7 @@ def reserve() -> None:
             raise typer.Exit(1)
 
         std_id, password = credentials
-        cookie = _perform_login(std_id, password)
+        cookie = _get_or_login_cookie(std_id, password)
         if not cookie:
             typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -646,6 +661,9 @@ def logout() -> None:
         typer.secho("저장된 로그인 정보를 삭제했습니다.", fg=typer.colors.GREEN)
     else:
         typer.secho("저장된 로그인 정보가 없습니다.", fg=typer.colors.YELLOW)
+
+    global SESSION_COOKIE
+    SESSION_COOKIE = None
 
 def main() -> None:
     app()
