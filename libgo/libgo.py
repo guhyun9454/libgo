@@ -473,24 +473,40 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
     # 전체 좌석 중 해당 번호가 있는지(단지 사용 중일 뿐인지)를 확인
     all_matches = [s for s in seats_data if str(_sname(s)) == seat_no]
     if not matches:
+        reason_msg = f"{seat_no}번 좌석은 현재 예약 가능하지 않습니다."
         if all_matches:
             # 좌석은 존재하지만 seatTime 등이 차 있어 예약 불가한 경우
+            seat_obj = all_matches[0]
+            seat_time = seat_obj.get("seatTime") or {}
+            my_seat_flag = seat_time.get("mySeat")
             try:
                 LOGGER.info(
                     "_pick_seat_by_number seat_no=%s exists but not available: %s",
                     seat_no,
-                    json.dumps(all_matches[0], ensure_ascii=False),
+                    json.dumps(seat_obj, ensure_ascii=False),
                 )
             except Exception:
                 LOGGER.info(
                     "_pick_seat_by_number seat_no=%s exists but not available (json dump failed)",
                     seat_no,
                 )
+            # mySeat 플래그로 현재 로그인한 사용자가 점유 중인지 구분
+            if my_seat_flag:
+                reason_msg = (
+                    f"{seat_no}번 좌석은 이미 현재 계정으로 이용 중입니다.\n"
+                )
+            else:
+                reason_msg = (
+                    f"{seat_no}번 좌석은 이미 다른 사용자가 이용 중입니다.\n"
+                )
         else:
             LOGGER.info(
                 "_pick_seat_by_number seat_no=%s not found in seats_data", seat_no
             )
-        typer.secho(f"{seat_no}번 좌석은 현재 예약 가능하지 않습니다.", fg=typer.colors.YELLOW)
+            reason_msg = (
+                f"{seat_no}번 좌석은 존재하지 않거나 선택할 수 없는 좌석입니다.\n"
+            )
+        typer.secho(reason_msg, fg=typer.colors.YELLOW)
         return None
 
     seat = matches[0]
@@ -591,23 +607,18 @@ def reserve() -> None:
             if msg:
                 typer.echo(f"서버 메시지: {msg}")
         else:
-            typer.secho("좌석 예약 실패.", fg=typer.colors.RED)
-            typer.echo(f"code={code}, message={msg}")
-
-            # 자주 나오는 에러 코드에 대한 사람이 읽기 쉬운 설명
-            friendly_reason = None
+            # LibSeat에서 자주 나오는 특정 에러 코드는 별도 메시지로 처리
             if code == 1206:
-                # 예) 이미 다른 좌석을 이용 중인데 새 좌석을 시작하려 할 때 발생하는 케이스로 추정
-                friendly_reason = (
-                    "이미 이용 중인 좌석이 있어 새 좌석을 시작할 수 없습니다.\n"
-                    "기존 좌석을 먼저 퇴실하거나 종료한 뒤 다시 시도하세요."
+                # 이미 다른 좌석을 이용 중인 상태에서 새 좌석을 시작하려는 경우로 추정
+                typer.secho(
+                    "이미 이용 중인 좌석이 있습니다.",
+                    fg=typer.colors.YELLOW,
                 )
-
-            if friendly_reason:
-                typer.echo(f"사유: {friendly_reason}")
-
-            # 디버깅을 위해 전체 JSON 출력
-            typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+            else:
+                typer.secho("좌석 예약 실패.", fg=typer.colors.RED)
+                typer.echo(f"code={code}, message={msg}")
+                # 디버깅을 위해 전체 JSON 출력
+                typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
 
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
