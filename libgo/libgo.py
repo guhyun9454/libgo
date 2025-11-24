@@ -677,6 +677,10 @@ def reserve() -> None:
                     "이미 이용 중인 좌석이 있습니다.",
                     fg=typer.colors.YELLOW,
                 )
+                LOGGER.info(
+                    "reserve special case 1206 (already using other seat): raw=%s",
+                    json.dumps(data, ensure_ascii=False),
+                )
             elif code == 1209:
                 # 모바일 앱에서는 "동일 좌석 재배정 대기 중입니다."로 표기되는 상황으로 추정
                 # (퇴실 직후 동일 좌석을 다시 잡을 때 등)
@@ -684,11 +688,18 @@ def reserve() -> None:
                     "동일 좌석 재배정 대기 중입니다.",
                     fg=typer.colors.YELLOW,
                 )
+                LOGGER.info(
+                    "reserve special case 1209 (same seat reassignment pending): raw=%s",
+                    json.dumps(data, ensure_ascii=False),
+                )
             else:
-                typer.secho("좌석 예약 실패.", fg=typer.colors.RED)
-                typer.echo(f"code={code}, message={msg}")
-                # 디버깅을 위해 전체 JSON 출력
-                typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+                typer.secho("좌석 예약 실패. 잠시 후 다시 시도해 보세요.", fg=typer.colors.RED)
+                LOGGER.warning(
+                    "reserve failed: code=%s, msg=%s, raw=%s",
+                    code,
+                    msg,
+                    json.dumps(data, ensure_ascii=False),
+                )
 
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
