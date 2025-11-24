@@ -482,7 +482,6 @@ def seats() -> None:
         for room_id in [8, 10, 11, 9]:
             room_name = ROOMS[room_id]
             url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
-            _log_http("GET", "request", url, room_id=room_id)
             res = requests.get(
                 url,
                 headers={
@@ -492,7 +491,7 @@ def seats() -> None:
                 },
                 verify=False,
             )
-            _log_http("GET", "response", url, status=res.status_code)
+            _log_http("GET", "request/response", url, status=res.status_code, room_id=room_id)
 
             if res.status_code != 200:
                 typer.secho(f"[{room_name}] 조회 실패 ({res.status_code})", fg=typer.colors.RED)
@@ -751,7 +750,6 @@ def reserve() -> None:
         _log("RESERVE", "minutes input", minutes=minutes)
 
         url = "https://libseat.khu.ac.kr/libraries/seat"
-        _log_http("POST", "request", url, seatId=seat_id, minutes=minutes)
         res = requests.post(
             url,
             headers={
@@ -763,7 +761,7 @@ def reserve() -> None:
             json={"seatId": seat_id, "time": minutes},
             verify=False,
         )
-        _log_http("POST", "response", url, status=res.status_code)
+        _log_http("POST", "request/response", url, status=res.status_code, seatId=seat_id, minutes=minutes)
 
         try:
             data = res.json()
@@ -873,13 +871,12 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
 
         # 1. 공개키 가져오기
         login_url = "https://lib.khu.ac.kr/login"
-        _log_http("GET", "request", login_url)
         res = session.get(
             login_url,
             headers={"User-Agent": _ua()},
             verify=False,
         )
-        _log_http("GET", "response", login_url, status=res.status_code)
+        _log_http("GET", "request/response", login_url, status=res.status_code)
         cookie = res.headers.get("Set-Cookie", "")
         match = re.search(r"encrypt\.setPublicKey\('([^']+)'", res.text)
         if not match:
@@ -895,7 +892,6 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
 
         # 2. 중앙도서관 로그인
         login_post_url = "https://lib.khu.ac.kr/login"
-        _log_http("POST", "request", login_post_url)
         res = session.post(
             login_post_url,
             data={"encId": enc_id, "encPw": enc_pw, "autoLoginChk": "N"},
@@ -903,7 +899,7 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
             verify=False,
             allow_redirects=True,
         )
-        _log_http("POST", "response", login_post_url, status=res.status_code)
+        _log_http("POST", "request/response", login_post_url, status=res.status_code)
         # 로그인 실패 여부는 호출한 쪽에서 메시지를 출력하도록, 여기서는 단순히 실패만 반환
         if '<p class="userName">' not in res.text:
             _log("LOGIN", "perform_login failed (userName marker not found)", level="warning")
@@ -913,13 +909,12 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
 
         # 3. mid_user_id 가져오기
         mid_url = "https://lib.khu.ac.kr/relation/mobileCard"
-        _log_http("GET", "request", mid_url)
         res_mid = session.get(
             mid_url,
             headers={"Cookie": lib_cookie, "User-Agent": _ua()},
             verify=False,
         )
-        _log_http("GET", "response", mid_url, status=res_mid.status_code)
+        _log_http("GET", "request/response", mid_url, status=res_mid.status_code)
         match_mid = re.search(r'name="mid_user_id" value="([^"]+)"', res_mid.text)
         if not match_mid:
             _log("LOGIN", "mid_user_id not found", level="error")
@@ -929,7 +924,6 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
 
         # 4. LibSeat 로그인
         seat_login_url = "https://libseat.khu.ac.kr/login_library"
-        _log_http("POST", "request", seat_login_url, STD_ID=std_id)
         seat_res = session.post(
             seat_login_url,
             data={"STD_ID": std_id},
@@ -937,7 +931,7 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
             verify=False,
             allow_redirects=False,
         )
-        _log_http("POST", "response", seat_login_url, status=seat_res.status_code)
+        _log_http("POST", "request/response", seat_login_url, status=seat_res.status_code, STD_ID=std_id)
 
         libseat_cookie = seat_res.headers.get("Set-Cookie")
 
@@ -975,7 +969,6 @@ def leave() -> None:
 
         # 1) 현재 mySeat 정보 조회
         status_url = "https://libseat.khu.ac.kr/user/my-status"
-        _log_http("GET", "request", status_url)
         res = requests.get(
             status_url,
             headers={
@@ -985,7 +978,7 @@ def leave() -> None:
             },
             verify=False,
         )
-        _log_http("GET", "response", status_url, status=res.status_code)
+        _log_http("GET", "request/response", status_url, status=res.status_code)
         res.raise_for_status()
 
         try:
@@ -1061,7 +1054,6 @@ def leave() -> None:
 
         # 2) 실제 퇴실 API 호출
         leave_url = f"https://libseat.khu.ac.kr/libraries/leave/{seat_code}"
-        _log_http("POST", "request", leave_url, seatCode=seat_code)
         leave_res = requests.post(
             leave_url,
             headers={
@@ -1071,7 +1063,7 @@ def leave() -> None:
             },
             verify=False,
         )
-        _log_http("POST", "response", leave_url, status=leave_res.status_code)
+        _log_http("POST", "request/response", leave_url, status=leave_res.status_code, seatCode=seat_code)
 
         success = False
         msg = ""
