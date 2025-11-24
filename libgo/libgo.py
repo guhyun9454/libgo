@@ -152,6 +152,7 @@ def menu() -> None:
                     "내 좌석 정보",
                     "실시간 좌석 현황",
                     "좌석 예약",
+                    "퇴실",
                     "로그아웃",
                     "나가기",
                 ],
@@ -192,6 +193,8 @@ def menu() -> None:
                 seats()
             elif choice == "좌석 예약":
                 reserve()
+            elif choice == "퇴실":
+                leave()
             elif choice == "로그아웃":
                 logout()
             elif choice == "나가기":
@@ -809,3 +812,142 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
 
 if __name__ == "__main__":
     main()
+@app.command()
+def leave() -> None:
+    """현재 이용 중인 좌석을 퇴실 처리합니다."""
+    try:
+        LOGGER.info("leave command called")
+        credentials = _get_credentials()
+        if not credentials:
+            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+
+        std_id, password = credentials
+        cookie = _get_or_login_cookie(std_id, password)
+        if not cookie:
+            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        # 1) 현재 mySeat 정보 조회
+        res = requests.get(
+            "https://libseat.khu.ac.kr/user/my-status",
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+            },
+            verify=False,
+        )
+        res.raise_for_status()
+
+        try:
+            data = res.json()
+        except Exception as e:
+            typer.secho(f"JSON 파싱 오류: {e}", fg=typer.colors.RED)
+            typer.echo(res.text)
+            raise typer.Exit(1)
+
+        LOGGER.info(f"leave my-status raw: {json.dumps(data, ensure_ascii=False)[:1000]}")
+
+        my_seat = data.get("data", {}).get("mySeat")
+        if not my_seat:
+            typer.secho("현재 이용 중인 좌석이 없습니다.", fg=typer.colors.YELLOW)
+            return
+
+        seat = my_seat.get("seat", {}) or {}
+        seat_name = (
+            seat.get("name")
+            or seat.get("seatNo")
+            or seat.get("num")
+            or "알 수 없음"
+        )
+
+        # group 정보는 seat 안에 있지 않을 수도 있어 mySeat 쪽도 함께 확인
+        group = seat.get("group") or my_seat.get("group") or {}
+        room_name = group.get("name", "알 수 없음")
+        class_group = group.get("classGroup", {})
+        campus_name = class_group.get("name", "알 수 없음")
+
+        seat_code = (
+            seat.get("code")
+            or seat.get("seatCode")
+            or seat.get("id")
+            or seat.get("seatId")
+        )
+        if not seat_code:
+            try:
+                LOGGER.info(
+                    "leave: cannot find seatCode, seat obj=%s",
+                    json.dumps(seat, ensure_ascii=False),
+                )
+            except Exception:
+                LOGGER.info("leave: cannot find seatCode, seat obj (json dump failed)")
+            typer.secho("현재 좌석의 코드(seatCode)를 찾을 수 없습니다.", fg=typer.colors.RED)
+            return
+
+        typer.secho("\n=== 퇴실 대상 좌석 ===", fg=typer.colors.CYAN, bold=True)
+        typer.echo(f"캠퍼스     : {campus_name}")
+        typer.echo(f"열람실     : {room_name}")
+        typer.echo(f"좌석 번호  : {seat_name}")
+        typer.echo(f"seatCode   : {seat_code}")
+
+        # 사용자 확인
+        confirm = inquirer.confirm(
+            message="위 좌석을 정말 퇴실 처리할까요?",
+            default=True,
+            qmark="[?]",
+        ).execute()
+        LOGGER.info(f"leave confirm={confirm}")
+        if not confirm:
+            typer.secho("퇴실을 취소했습니다.", fg=typer.colors.YELLOW)
+            return
+
+        # 2) 실제 퇴실 API 호출
+        url = f"https://libseat.khu.ac.kr/libraries/leave/{seat_code}"
+        leave_res = requests.post(
+            url,
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+            },
+            verify=False,
+        )
+
+        LOGGER.info(f"leave response status={leave_res.status_code}")
+        LOGGER.info(f"leave response text={leave_res.text[:2000]}")
+
+        success = False
+        msg = ""
+        code = None
+
+        try:
+            body = leave_res.json()
+            code = body.get("code")
+            msg = body.get("msg") or body.get("message") or ""
+            if code == 1:
+                success = True
+        except Exception:
+            # JSON 응답이 아닐 경우 HTTP 상태 코드 기준으로만 성공 여부 판정
+            if 200 <= leave_res.status_code < 300:
+                success = True
+
+        if success:
+            typer.secho("퇴실 처리 성공!", fg=typer.colors.GREEN, bold=True)
+            if msg:
+                typer.echo(f"서버 메시지: {msg}")
+        else:
+            typer.secho("퇴실 처리에 실패했습니다.", fg=typer.colors.RED)
+            if msg:
+                typer.echo(f"code={code}, message={msg}")
+            else:
+                typer.echo(f"HTTP status={leave_res.status_code}")
+                typer.echo(leave_res.text)
+
+    except KeyboardInterrupt:
+        typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+    except typer.Exit:
+        # Typer가 처리하도록 그대로 전달
+        raise
+    except Exception as e:
+        typer.secho(f"퇴실 처리 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
