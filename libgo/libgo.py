@@ -35,7 +35,7 @@ ROOMS = {
     11: "2F      혜윰",
 }
 
-LOG_DIR = Path.home() / ".libgo"
+LOG_DIR = Path(".libgo")
 LOG_FILE = LOG_DIR / "libgo.log"
 
 
