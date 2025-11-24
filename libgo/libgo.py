@@ -54,18 +54,36 @@ def _get_credentials() -> Optional[Tuple[str, Optional[str]]]:
     except Exception:
         return None
 
-def _delete_credentials() -> None:
+def _delete_credentials() -> bool:
+    """
+    keyring에 저장된 학번/비밀번호가 존재했는지 여부를 반환합니다.
+    - 저장된 학번이 있으면 삭제를 시도하고 True를 반환합니다.
+    - 저장된 학번이 없으면 False를 반환합니다.
+    삭제 중 예외는 조용히 무시합니다.
+    """
     try:
         std_id = keyring.get_password(SERVICE, ID_KEY)
-        if std_id:
-            try:
-                keyring.delete_password(SERVICE, std_id)
-            except keyring.errors.PasswordDeleteError:
-                pass
-        keyring.delete_password(SERVICE, ID_KEY)
-        typer.secho("keyring에서 자격 증명을 삭제했습니다.", fg=typer.colors.GREEN)
+        if not std_id:
+            return False
+
+        # 1) 학번에 매핑된 비밀번호 삭제
+        try:
+            keyring.delete_password(SERVICE, std_id)
+        except keyring.errors.PasswordDeleteError:
+            # 이미 삭제되었거나 존재하지 않는 경우 무시
+            pass
+
+        # 2) 기본 학번 키 삭제
+        try:
+            keyring.delete_password(SERVICE, ID_KEY)
+        except keyring.errors.PasswordDeleteError:
+            # 이미 삭제되었거나 존재하지 않는 경우 무시
+            pass
+
+        return True
     except Exception:
-        typer.secho("keyring에서 자격 증명 삭제 실패 또는 자격 증명 없음.", fg=typer.colors.YELLOW)
+        # 삭제 실패 케이스는 드물다고 가정하고, 조용히 "없음"으로 처리
+        return False
 
 def _login_wizard() -> Optional[Tuple[str, str]]:
     try:
@@ -80,8 +98,6 @@ def _login_wizard() -> Optional[Tuple[str, str]]:
             validate=lambda x: len(x) > 0 or "비밀번호는 필수입니다.",
         ).execute()
 
-        _save_credentials(std_id.strip(), password)
-        typer.secho("아이디 비밀번호 저장 완료", fg=typer.colors.GREEN)
         return std_id.strip(), password
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
@@ -109,23 +125,28 @@ def menu() -> None:
 
             if choice == "로그인":
                 creds = _get_credentials()
-                if creds:
-                    from_keyring = True
-                else:
-                    from_keyring = False
+                from_keyring = creds is not None
+
+                # keyring에 정보가 없으면 마법사로부터 새 자격 증명 입력
+                if not creds:
                     creds = _login_wizard()
-                if creds:
-                    std_id, password = creds
-                    cookie = _perform_login(std_id, password)
-                    if cookie:
-                        if from_keyring:
-                            typer.secho(f"이미 로그인되어 있습니다. (학번: {std_id})", fg=typer.colors.GREEN)
-                        else:
-                            typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
+
+                # 사용자가 입력을 취소했거나 유효한 정보가 없는 경우
+                if not creds:
+                    typer.secho("로그인이 취소되었거나 로그인 정보가 없습니다.", fg=typer.colors.YELLOW)
+                    continue
+
+                std_id, password = creds
+                cookie = _perform_login(std_id, password)
+                if cookie:
+                    if from_keyring:
+                        typer.secho(f"이미 로그인되어 있습니다. (학번: {std_id})", fg=typer.colors.GREEN)
                     else:
-                        typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
+                        # 로그인 성공한 경우에만 자격 증명 저장
+                        _save_credentials(std_id.strip(), password)
+                        typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
                 else:
-                    typer.secho("저장된 로그인 정보가 없습니다.", fg=typer.colors.RED)
+                    typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
             elif choice == "내 좌석 정보":
                 status()
             elif choice == "실시간 좌석 현황":
@@ -447,8 +468,10 @@ def whoami() -> None:
 @app.command()
 def logout() -> None:
     """키링에 저장된 학번/비밀번호를 삭제합니다."""
-    _delete_credentials()
-    typer.secho("저장된 로그인 정보를 삭제했습니다.", fg=typer.colors.GREEN)
+    if _delete_credentials():
+        typer.secho("저장된 로그인 정보를 삭제했습니다.", fg=typer.colors.GREEN)
+    else:
+        typer.secho("저장된 로그인 정보가 없습니다.", fg=typer.colors.YELLOW)
 
 def main() -> None:
     app()
@@ -483,8 +506,8 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
             verify=False,
             allow_redirects=True,
         )
+        # 로그인 실패 여부는 호출한 쪽에서 메시지를 출력하도록, 여기서는 단순히 실패만 반환
         if '<p class="userName">' not in res.text:
-            typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
             return None
 
         lib_cookie = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
