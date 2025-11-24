@@ -339,7 +339,56 @@ def status() -> None:
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
+    """
+    스크립트를 서브커맨드 없이 실행했을 때,
+    자동으로 로그인(쿠키 확보)을 시도한 뒤 메뉴를 보여줍니다.
+    """
     if ctx.invoked_subcommand is None:
+        # 1) 자동 로그인 시도
+        try:
+            creds = _get_credentials()
+            from_keyring = creds is not None
+
+            # keyring에 저장된 정보가 없으면 로그인 마법사로 입력받기
+            if not creds:
+                creds = _login_wizard()
+
+            if creds:
+                std_id, password = creds
+                cookie = _get_or_login_cookie(std_id, password)
+
+                if cookie and not from_keyring:
+                    # 처음 로그인에 성공한 경우 자격 증명 저장
+                    _save_credentials(std_id.strip(), password)
+                    typer.secho(
+                        "자동 로그인 성공! 아이디와 비밀번호를 안전하게 저장했습니다.",
+                        fg=typer.colors.GREEN,
+                    )
+                elif cookie and from_keyring:
+                    typer.secho(
+                        f"저장된 학번({std_id})으로 자동 로그인되었습니다.",
+                        fg=typer.colors.GREEN,
+                    )
+                else:
+                    typer.secho(
+                        "자동 로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.",
+                        fg=typer.colors.RED,
+                    )
+            else:
+                # 사용자가 마법사를 취소한 경우 등
+                typer.secho(
+                    "자동 로그인을 건너뛰고 메뉴로 이동합니다.",
+                    fg=typer.colors.YELLOW,
+                )
+        except KeyboardInterrupt:
+            typer.secho("\n자동 로그인이 취소되었습니다.", fg=typer.colors.YELLOW)
+        except Exception as e:
+            typer.secho(
+                f"자동 로그인 중 오류가 발생했습니다: {e}",
+                fg=typer.colors.RED,
+            )
+
+        # 2) 로그인 시도 후 메뉴 진입
         menu()
 
 @app.command()
