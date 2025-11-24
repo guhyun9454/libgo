@@ -484,8 +484,11 @@ def reserve() -> None:
         code = data.get("code")
         msg = data.get("msg") or data.get("message") or ""
         LOGGER.info(f"reserve parsed response: code={code}, msg={msg}")
-        # 일부 응답은 code 값이 1이 아닌데도 message가 SUCCESS로 오는 사례가 있어 보수적으로 처리
-        success = (code == 1) or (str(msg).upper() == "SUCCESS")
+
+        # LibSeat 응답 의미:
+        # - code == 1   : 정상적으로 좌석 사용 시작(또는 예약) 성공
+        # - 그 외 숫자  : 에러 코드 (이미 사용 중, 시간 제한, 권한 부족 등)
+        success = (code == 1)
 
         if success:
             typer.secho("좌석 예약/사용 시작 성공!", fg=typer.colors.GREEN, bold=True)
@@ -495,6 +498,19 @@ def reserve() -> None:
         else:
             typer.secho("좌석 예약 실패.", fg=typer.colors.RED)
             typer.echo(f"code={code}, message={msg}")
+
+            # 자주 나오는 에러 코드에 대한 사람이 읽기 쉬운 설명
+            friendly_reason = None
+            if code == 1206:
+                # 예) 이미 다른 좌석을 이용 중인데 새 좌석을 시작하려 할 때 발생하는 케이스로 추정
+                friendly_reason = (
+                    "이미 이용 중인 좌석이 있어 새 좌석을 시작할 수 없습니다.\n"
+                    "기존 좌석을 먼저 퇴실하거나 종료한 뒤 다시 시도하세요."
+                )
+
+            if friendly_reason:
+                typer.echo(f"사유: {friendly_reason}")
+
             # 디버깅을 위해 전체 JSON 출력
             typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
 
