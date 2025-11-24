@@ -934,15 +934,8 @@ def leave() -> None:
 
         if success:
             typer.secho("퇴실 처리 성공!", fg=typer.colors.GREEN, bold=True)
-            if msg:
-                typer.echo(f"서버 메시지: {msg}")
         else:
             typer.secho("퇴실 처리에 실패했습니다.", fg=typer.colors.RED)
-            if msg:
-                typer.echo(f"code={code}, message={msg}")
-            else:
-                typer.echo(f"HTTP status={leave_res.status_code}")
-                typer.echo(leave_res.text)
 
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
