@@ -60,10 +60,54 @@ SESSION_COOKIE: Optional[str] = None
 # 마지막으로 확인한 좌석별 예약 종료 시각(ms). 동일 좌석 재예약 제한(1209) 안내에 사용된다.
 LAST_SEAT_EXPIRE: Dict[str, int] = {}
 
+# 현재 CLI 세션에서 사용 중인 학번(로그인 컨텍스트)
+CURRENT_STD_ID: Optional[str] = None
+
+def _set_current_user(std_id: str) -> None:
+    """현재 CLI 세션에서 사용 중인 학번을 전역 컨텍스트로 저장합니다."""
+    global CURRENT_STD_ID
+    CURRENT_STD_ID = std_id
+
+
+def _log(kind: str, message: str, level: str = "info", **fields: object) -> None:
+    """일관된 포맷으로 로그를 남기기 위한 헬퍼.
+
+    kind: [MENU], [CMD], [HTTP/GET], [HTTP/POST], [SERVER], [LOGIN] 등의 태그용 문자열
+    message: 핵심 설명 메시지
+    level: info / warning / error
+    fields: 추가로 붙이고 싶은 key=value 쌍
+    """
+    user = CURRENT_STD_ID or "-"
+    fields_str = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)
+    line = f"[{kind}] user={user} {message}"
+    if fields_str:
+        line += f" | {fields_str}"
+
+    if level == "warning":
+        LOGGER.warning(line)
+    elif level == "error":
+        LOGGER.error(line)
+    else:
+        LOGGER.info(line)
+
+
+def _log_http(method: str, phase: str, url: str, status: Optional[int] = None, **fields: object) -> None:
+    """HTTP 요청/응답을 일관된 포맷으로 로깅합니다.
+
+    method: GET/POST 등
+    phase: request/response 구분용 텍스트
+    url: 호출 URL
+    status: 응답 코드 (요청 시에는 None 가능)
+    """
+    kind = f"HTTP/{method.upper()}"
+    msg = f"{phase} {url}"
+    _log(kind, msg, status=status, **fields)
+
 
 def _get_or_login_cookie(std_id: str, password: str) -> Optional[str]:
     """캐시된 세션 쿠키가 있으면 그대로 사용하고, 없으면 로그인 절차를 거쳐 쿠키를 생성합니다."""
     global SESSION_COOKIE
+    _set_current_user(std_id)
     if SESSION_COOKIE:
         return SESSION_COOKIE
 
@@ -138,6 +182,7 @@ def _login_wizard() -> Optional[Tuple[str, str]]:
             validate=lambda x: len(x) > 0 or "비밀번호는 필수입니다.",
         ).execute()
 
+        _set_current_user(std_id.strip())
         return std_id.strip(), password
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
@@ -164,7 +209,7 @@ def menu() -> None:
                 pointer=">",
             ).execute()
 
-            LOGGER.info(f"menu choice: {choice}")
+            _log("MENU", "choice", choice=choice)
 
             if choice == "로그인":
                 creds = _get_credentials()
@@ -212,7 +257,7 @@ def status() -> None:
     LibSeat 내 좌석 현황(마이페이지) 정보를 출력합니다.
     """
     try:
-        LOGGER.info("status command called")
+        _log("CMD", "status", command="status")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -239,14 +284,14 @@ def status() -> None:
             typer.echo(res.text)
             raise typer.Exit(1)
 
-        LOGGER.info(f"status raw data: {json.dumps(data, ensure_ascii=False)[:1000]}")
+        # LOGGER.info(f"status raw data: {json.dumps(data, ensure_ascii=False)[:1000]}")
 
         my_seat = data.get("data", {}).get("mySeat")
         if not my_seat:
             typer.echo("현재 이용 중인 좌석이 없습니다.")
             return
 
-        LOGGER.info(f"status mySeat: {json.dumps(my_seat, ensure_ascii=False)}")
+        # LOGGER.info(f"status mySeat: {json.dumps(my_seat, ensure_ascii=False)}")
 
         seat = my_seat.get("seat", {})
         seat_name = seat.get("name", "알 수 없음")
@@ -278,6 +323,15 @@ def status() -> None:
             except Exception:
                 # 캐시 실패는 치명적이지 않으므로 무시
                 pass
+
+        _log(
+            "STATUS",
+            "mySeat parsed",
+            seatCode=seat_code_for_cache,
+            state=state,
+            room=room_name,
+            seat=seat_name,
+        )
 
         confirm_time_str = format_time(confirm_time_ms) if confirm_time_ms else "알 수 없음"
         count_down_time_str = format_time(count_down_time_ms) if count_down_time_ms else "알 수 없음"
@@ -367,6 +421,7 @@ def _root(ctx: typer.Context) -> None:
         try:
             creds = _get_credentials()
             from_keyring = creds is not None
+            _log("CMD", "root entry", command="_root", from_keyring=from_keyring)
 
             # keyring에 저장된 정보가 없으면 로그인 마법사로 입력받기
             if not creds:
@@ -374,9 +429,11 @@ def _root(ctx: typer.Context) -> None:
 
             if creds:
                 std_id, password = creds
+                _set_current_user(std_id)
                 cookie = _get_or_login_cookie(std_id, password)
 
                 if cookie and not from_keyring:
+                    _log("LOGIN", "auto login success (fresh)", std_id=std_id)
                     # 처음 로그인에 성공한 경우 자격 증명 저장
                     _save_credentials(std_id.strip(), password)
                     typer.secho(
@@ -384,24 +441,29 @@ def _root(ctx: typer.Context) -> None:
                         fg=typer.colors.GREEN,
                     )
                 elif cookie and from_keyring:
+                    _log("LOGIN", "auto login success (from keyring)", std_id=std_id)
                     typer.secho(
                         f"저장된 학번({std_id})으로 자동 로그인되었습니다.",
                         fg=typer.colors.GREEN,
                     )
                 else:
+                    _log("LOGIN", "auto login failed", std_id=std_id)
                     typer.secho(
                         "자동 로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.",
                         fg=typer.colors.RED,
                     )
             else:
+                _log("LOGIN", "auto login skipped (no creds)")
                 # 사용자가 마법사를 취소한 경우 등
                 typer.secho(
                     "자동 로그인을 건너뛰고 메뉴로 이동합니다.",
                     fg=typer.colors.YELLOW,
                 )
         except KeyboardInterrupt:
+            _log("LOGIN", "auto login cancelled")
             typer.secho("\n자동 로그인이 취소되었습니다.", fg=typer.colors.YELLOW)
         except Exception as e:
+            _log("LOGIN", "auto login error", level="error", error=str(e))
             typer.secho(
                 f"자동 로그인 중 오류가 발생했습니다: {e}",
                 fg=typer.colors.RED,
@@ -416,7 +478,7 @@ def seats() -> None:
     중앙도서관 열람실별 남은 좌석 수를 실시간으로 표시합니다.
     """
     try:
-        LOGGER.info("seats command called")
+        _log("CMD", "seats", command="seats")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -433,6 +495,7 @@ def seats() -> None:
         for room_id in [8, 10, 11, 9]:
             room_name = ROOMS[room_id]
             url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
+            _log_http("GET", "request", url, room_id=room_id)
             res = requests.get(
                 url,
                 headers={
@@ -442,6 +505,7 @@ def seats() -> None:
                 },
                 verify=False,
             )
+            _log_http("GET", "response", url, status=res.status_code)
 
             if res.status_code != 200:
                 typer.secho(f"[{room_name}] 조회 실패 ({res.status_code})", fg=typer.colors.RED)
@@ -451,8 +515,13 @@ def seats() -> None:
             total = len(data)
             available = sum(1 for s in data if s.get("seatTime") is None)
             available_percent = (available / total) * 100 if total > 0 else 0.0
-            LOGGER.info(
-                f"seats room={room_name}, total={total}, available={available}, available_percent={available_percent:.1f}"
+            _log(
+                "SEATS",
+                "room summary",
+                room=room_name,
+                total=total,
+                available=available,
+                available_percent=f"{available_percent:.1f}",
             )
             typer.echo(f"[{room_name}] {available:>4} / {total:<4} ({int(round(available_percent))}%)")
 
@@ -470,10 +539,10 @@ def _pick_seat(cookie: str) -> Optional[str]:
         qmark="[?]",
         pointer=">",
     ).execute()
-    LOGGER.info(f"_pick_seat room_choice: {room_choice}")
+    _log("MENU", "pick_seat room", choice=room_choice)
     try:
         room_id = int(room_choice.split(" — ")[0])
-        LOGGER.info(f"_pick_seat parsed room_id: {room_id}")
+        _log("MENU", "pick_seat room parsed", room_id=room_id)
     except Exception:
         typer.secho("열람실 선택 파싱 실패", fg=typer.colors.RED)
         return None
@@ -495,7 +564,7 @@ def _pick_seat(cookie: str) -> Optional[str]:
 
     try:
         seats_data = res.json().get("data", [])
-        LOGGER.info(f"_pick_seat seats_data_len: {len(seats_data)}")
+        _log("SEATS", "seats loaded", room_id=room_id, count=len(seats_data))
     except Exception as e:
         typer.secho(f"좌석 목록 JSON 파싱 실패: {e}", fg=typer.colors.RED)
         typer.echo(res.text)
@@ -509,7 +578,7 @@ def _pick_seat(cookie: str) -> Optional[str]:
         return s.get("name") or s.get("seatNo") or s.get("num") or str(_sid(s))
 
     available = [s for s in seats_data if s.get("seatTime") is None]
-    LOGGER.info(f"_pick_seat available_count: {len(available)}")
+    _log("SEATS", "available seats", room_id=room_id, count=len(available))
     if not available:
         typer.secho(f"[{ROOMS.get(room_id, room_id)}] 현재 예약 가능한 좌석이 없습니다.", fg=typer.colors.YELLOW)
         return None
@@ -536,10 +605,10 @@ def _pick_seat(cookie: str) -> Optional[str]:
     m = re.search(r"id:(\d+)", picked)
     if not m:
         typer.secho("좌석 선택 파싱 실패", fg=typer.colors.RED)
-        LOGGER.info(f"_pick_seat parse failure, picked={picked}")
+        _log("SEATS", "pick_seat parse failure", picked=picked)
         return None
     seat_id = m.group(1)
-    LOGGER.info(f"_pick_seat picked={picked}, seat_id={seat_id}")
+    _log("SEATS", "seat picked", picked=picked, seat_id=seat_id)
     return seat_id
 
 # 새 헬퍼 함수: _pick_seat_by_number
@@ -556,10 +625,10 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
         qmark="[?]",
         pointer=">",
     ).execute()
-    LOGGER.info(f"_pick_seat_by_number room_choice: {room_choice}")
+    _log("MENU", "pick_seat_by_number room", choice=room_choice)
     try:
         room_id = int(room_choice.split(" — ")[0])
-        LOGGER.info(f"_pick_seat_by_number parsed room_id: {room_id}")
+        _log("MENU", "pick_seat_by_number room parsed", room_id=room_id)
     except Exception:
         typer.secho("열람실 선택 파싱 실패", fg=typer.colors.RED)
         return None
@@ -581,7 +650,7 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
 
     try:
         seats_data = res.json().get("data", [])
-        LOGGER.info(f"_pick_seat_by_number seats_data_len: {len(seats_data)}")
+        _log("SEATS", "seats loaded", room_id=room_id, count=len(seats_data))
     except Exception as e:
         typer.secho(f"좌석 목록 JSON 파싱 실패: {e}", fg=typer.colors.RED)
         typer.echo(res.text)
@@ -599,11 +668,11 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
         qmark="[?]",
         validate=lambda x: len(x.strip()) > 0 or "좌석 번호는 필수입니다.",
     ).execute().strip()
-    LOGGER.info(f"_pick_seat_by_number user_input seat_no={seat_no}")
+    _log("SEATS", "seat number input", room_id=room_id, seat_no=seat_no)
 
     # 4) 현재 예약 가능한 좌석 중에서 번호 일치하는 좌석 찾기
     available = [s for s in seats_data if s.get("seatTime") is None]
-    LOGGER.info(f"_pick_seat_by_number available_count: {len(available)}")
+    _log("SEATS", "available seats", room_id=room_id, count=len(available))
 
     matches = [s for s in available if str(_sname(s)) == seat_no]
     # 전체 좌석 중 해당 번호가 있는지(단지 사용 중일 뿐인지)를 확인
@@ -615,17 +684,7 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
             seat_obj = all_matches[0]
             seat_time = seat_obj.get("seatTime") or {}
             my_seat_flag = seat_time.get("mySeat")
-            try:
-                LOGGER.info(
-                    "_pick_seat_by_number seat_no=%s exists but not available: %s",
-                    seat_no,
-                    json.dumps(seat_obj, ensure_ascii=False),
-                )
-            except Exception:
-                LOGGER.info(
-                    "_pick_seat_by_number seat_no=%s exists but not available (json dump failed)",
-                    seat_no,
-                )
+            _log("SEATS", "seat exists but not available", room_id=room_id, seat_no=seat_no)
             # mySeat 플래그로 현재 로그인한 사용자가 점유 중인지 구분
             if my_seat_flag:
                 reason_msg = (
@@ -636,9 +695,7 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
                     f"{seat_no}번 좌석은 이미 다른 사용자가 이용 중입니다.\n"
                 )
         else:
-            LOGGER.info(
-                "_pick_seat_by_number seat_no=%s not found in seats_data", seat_no
-            )
+            _log("SEATS", "seat number not found", room_id=room_id, seat_no=seat_no)
             reason_msg = (
                 f"{seat_no}번 좌석은 존재하지 않거나 선택할 수 없는 좌석입니다.\n"
             )
@@ -652,7 +709,7 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
         return None
 
     seat_id_str = str(seat_id)
-    LOGGER.info(f"_pick_seat_by_number resolved seat_no={seat_no}, seat_id={seat_id_str}")
+    _log("SEATS", "seat resolved", room_id=room_id, seat_no=seat_no, seat_id=seat_id_str)
     return seat_id_str
 
 @app.command()
@@ -664,7 +721,7 @@ def reserve() -> None:
     성공 판단: 응답 JSON의 code === 1
     """
     try:
-        LOGGER.info("reserve command called")
+        _log("CMD", "reserve", command="reserve")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -682,7 +739,7 @@ def reserve() -> None:
             qmark="[?]",
             pointer=">",
         ).execute()
-        LOGGER.info(f"reserve mode: {mode}")
+        _log("RESERVE", "mode selected", mode=mode)
 
         if mode == "열람실에서 선택":
             seat_id = _pick_seat(cookie) or ""
@@ -690,7 +747,7 @@ def reserve() -> None:
             # 열람실을 선택한 뒤, 사용자가 보는 좌석 번호(예: 76)를 입력받아 seatId를 해석한다.
             seat_id = _pick_seat_by_number(cookie) or ""
 
-        LOGGER.info(f"reserve seat_id raw: {seat_id}")
+        _log("RESERVE", "seat_id resolved", seat_id=seat_id)
 
         if not seat_id:
             # 상위 선택 단계(_pick_seat / _pick_seat_by_number)에서 이미 사용자에게 메시지를 보여줬으므로
@@ -704,10 +761,12 @@ def reserve() -> None:
             validate=lambda x: (x.isdigit() and int(x) > 0) or "양의 정수를 입력하세요.",
         ).execute()
         minutes = int(minutes_str)
-        LOGGER.info(f"reserve minutes: {minutes}")
+        _log("RESERVE", "minutes input", minutes=minutes)
 
+        url = "https://libseat.khu.ac.kr/libraries/seat"
+        _log_http("POST", "request", url, seatId=seat_id, minutes=minutes)
         res = requests.post(
-            "https://libseat.khu.ac.kr/libraries/seat",
+            url,
             headers={
                 "Cookie": cookie,
                 "User-Agent": _ua(),
@@ -717,9 +776,7 @@ def reserve() -> None:
             json={"seatId": seat_id, "time": minutes},
             verify=False,
         )
-
-        LOGGER.info(f"reserve response status: {res.status_code}")
-        LOGGER.info(f"reserve response text: {res.text[:2000]}")
+        _log_http("POST", "response", url, status=res.status_code)
 
         try:
             data = res.json()
@@ -730,7 +787,7 @@ def reserve() -> None:
 
         code = data.get("code")
         msg = data.get("msg") or data.get("message") or ""
-        LOGGER.info(f"reserve parsed response: code={code}, msg={msg}")
+        _log("SERVER", "reserve result", code=code, msg=msg)
 
         # LibSeat 응답 의미:
         # - code == 1   : 정상적으로 좌석 사용 시작(또는 예약) 성공
@@ -807,6 +864,7 @@ def reserve() -> None:
         # Typer가 처리하도록 그대로 전달
         raise
     except Exception as e:
+        _log("RESERVE", "error", level="error", error=str(e))
         typer.secho(f"좌석 예약 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
 @app.command()
@@ -817,12 +875,15 @@ def whoami() -> None:
         typer.secho("저장된 로그인 정보가 없습니다. `libgo login`을 실행하세요.", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
     std_id, pw = pair
+    _set_current_user(std_id)
+    _log("CMD", "whoami", std_id=std_id, has_password=bool(pw))
     typer.echo(f"현재 기본 학번: {std_id}")
     typer.echo("비밀번호: 저장됨" if pw else "비밀번호: (없음)")
 
 @app.command()
 def logout() -> None:
     """키링에 저장된 학번/비밀번호를 삭제합니다."""
+    _log("CMD", "logout")
     if _delete_credentials():
         typer.secho("저장된 로그인 정보를 삭제했습니다.", fg=typer.colors.GREEN)
     else:
@@ -830,24 +891,30 @@ def logout() -> None:
 
     global SESSION_COOKIE
     SESSION_COOKIE = None
+    _set_current_user("")
 
 def main() -> None:
     app()
 
 def _perform_login(std_id: str, password: str) -> Optional[str]:
-    LOGGER.info(f"_perform_login called for std_id={std_id}")
+    _set_current_user(std_id)
+    _log("LOGIN", "perform_login start", std_id=std_id)
     try:
         session = requests.Session()
 
         # 1. 공개키 가져오기
+        login_url = "https://lib.khu.ac.kr/login"
+        _log_http("GET", "request", login_url)
         res = session.get(
-            "https://lib.khu.ac.kr/login",
+            login_url,
             headers={"User-Agent": _ua()},
             verify=False,
         )
+        _log_http("GET", "response", login_url, status=res.status_code)
         cookie = res.headers.get("Set-Cookie", "")
         match = re.search(r"encrypt\.setPublicKey\('([^']+)'", res.text)
         if not match:
+            _log("LOGIN", "public key not found", level="error")
             typer.secho("공개키를 가져올 수 없습니다.", fg=typer.colors.RED)
             return None
 
@@ -858,52 +925,64 @@ def _perform_login(std_id: str, password: str) -> Optional[str]:
         enc_pw = base64.b64encode(cipher.encrypt(password.encode())).decode()
 
         # 2. 중앙도서관 로그인
+        login_post_url = "https://lib.khu.ac.kr/login"
+        _log_http("POST", "request", login_post_url)
         res = session.post(
-            "https://lib.khu.ac.kr/login",
+            login_post_url,
             data={"encId": enc_id, "encPw": enc_pw, "autoLoginChk": "N"},
             headers={"Cookie": cookie, "User-Agent": _ua()},
             verify=False,
             allow_redirects=True,
         )
+        _log_http("POST", "response", login_post_url, status=res.status_code)
         # 로그인 실패 여부는 호출한 쪽에서 메시지를 출력하도록, 여기서는 단순히 실패만 반환
         if '<p class="userName">' not in res.text:
-            LOGGER.info("_perform_login failed: userName marker not found in response HTML")
+            _log("LOGIN", "perform_login failed (userName marker not found)", level="warning")
             return None
 
         lib_cookie = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
 
         # 3. mid_user_id 가져오기
+        mid_url = "https://lib.khu.ac.kr/relation/mobileCard"
+        _log_http("GET", "request", mid_url)
         res_mid = session.get(
-            "https://lib.khu.ac.kr/relation/mobileCard",
+            mid_url,
             headers={"Cookie": lib_cookie, "User-Agent": _ua()},
             verify=False,
         )
+        _log_http("GET", "response", mid_url, status=res_mid.status_code)
         match_mid = re.search(r'name="mid_user_id" value="([^"]+)"', res_mid.text)
         if not match_mid:
+            _log("LOGIN", "mid_user_id not found", level="error")
             typer.secho("❌ mid_user_id를 가져올 수 없습니다.", fg=typer.colors.RED)
             return None
         mid_user_id = match_mid.group(1)
 
         # 4. LibSeat 로그인
+        seat_login_url = "https://libseat.khu.ac.kr/login_library"
+        _log_http("POST", "request", seat_login_url, STD_ID=std_id)
         seat_res = session.post(
-            "https://libseat.khu.ac.kr/login_library",
+            seat_login_url,
             data={"STD_ID": std_id},
             headers={"Cookie": lib_cookie, "User-Agent": _ua()},
             verify=False,
             allow_redirects=False,
         )
+        _log_http("POST", "response", seat_login_url, status=seat_res.status_code)
 
         libseat_cookie = seat_res.headers.get("Set-Cookie")
 
         if not libseat_cookie:
+            _log("LOGIN", "libseat cookie missing", level="warning", status=seat_res.status_code)
             typer.secho(f"❌ LibSeat 로그인 실패 (상태 코드 {seat_res.status_code}) — 쿠키 없음", fg=typer.colors.RED)
             return lib_cookie
 
         combined_cookie = f"{lib_cookie}; {libseat_cookie}"
-        LOGGER.info("_perform_login success (cookies acquired)")
+        _log("LOGIN", "perform_login success")
         return combined_cookie
 
     except Exception as e:
+        _log("LOGIN", "perform_login error", level="error", error=str(e))
         typer.secho(f"로그인 요청 중 오류 발생: {e}", fg=typer.colors.RED)
         return None
 
@@ -913,7 +992,7 @@ if __name__ == "__main__":
 def leave() -> None:
     """현재 이용 중인 좌석을 퇴실 처리합니다."""
     try:
-        LOGGER.info("leave command called")
+        _log("CMD", "leave", command="leave")
         credentials = _get_credentials()
         if not credentials:
             typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
@@ -926,8 +1005,10 @@ def leave() -> None:
             raise typer.Exit(1)
 
         # 1) 현재 mySeat 정보 조회
+        status_url = "https://libseat.khu.ac.kr/user/my-status"
+        _log_http("GET", "request", status_url)
         res = requests.get(
-            "https://libseat.khu.ac.kr/user/my-status",
+            status_url,
             headers={
                 "Cookie": cookie,
                 "User-Agent": _ua(),
@@ -935,6 +1016,7 @@ def leave() -> None:
             },
             verify=False,
         )
+        _log_http("GET", "response", status_url, status=res.status_code)
         res.raise_for_status()
 
         try:
@@ -944,7 +1026,7 @@ def leave() -> None:
             typer.echo(res.text)
             raise typer.Exit(1)
 
-        LOGGER.info(f"leave my-status raw: {json.dumps(data, ensure_ascii=False)[:1000]}")
+        # LOGGER.info(f"leave my-status raw: {json.dumps(data, ensure_ascii=False)[:1000]}")
 
         my_seat = data.get("data", {}).get("mySeat")
         if not my_seat:
@@ -982,6 +1064,15 @@ def leave() -> None:
             typer.secho("현재 좌석의 코드(seatCode)를 찾을 수 없습니다.", fg=typer.colors.RED)
             return
 
+        _log(
+            "LEAVE",
+            "current seat",
+            campus=campus_name,
+            room=room_name,
+            seat=seat_name,
+            seatCode=seat_code,
+        )
+
         typer.secho("\n=== 퇴실 대상 좌석 ===", fg=typer.colors.CYAN, bold=True)
         typer.echo(f"캠퍼스     : {campus_name}")
         typer.echo(f"열람실     : {room_name}")
@@ -994,15 +1085,16 @@ def leave() -> None:
             default=True,
             qmark="[?]",
         ).execute()
-        LOGGER.info(f"leave confirm={confirm}")
+        _log("LEAVE", "confirm", confirm=confirm)
         if not confirm:
             typer.secho("퇴실을 취소했습니다.", fg=typer.colors.YELLOW)
             return
 
         # 2) 실제 퇴실 API 호출
-        url = f"https://libseat.khu.ac.kr/libraries/leave/{seat_code}"
+        leave_url = f"https://libseat.khu.ac.kr/libraries/leave/{seat_code}"
+        _log_http("POST", "request", leave_url, seatCode=seat_code)
         leave_res = requests.post(
-            url,
+            leave_url,
             headers={
                 "Cookie": cookie,
                 "User-Agent": _ua(),
@@ -1010,9 +1102,7 @@ def leave() -> None:
             },
             verify=False,
         )
-
-        LOGGER.info(f"leave response status={leave_res.status_code}")
-        LOGGER.info(f"leave response text={leave_res.text[:2000]}")
+        _log_http("POST", "response", leave_url, status=leave_res.status_code)
 
         success = False
         msg = ""
@@ -1022,6 +1112,7 @@ def leave() -> None:
             body = leave_res.json()
             code = body.get("code")
             msg = body.get("msg") or body.get("message") or ""
+            _log("SERVER", "leave result", code=code, msg=msg)
             if code == 1:
                 success = True
         except Exception:
@@ -1040,4 +1131,5 @@ def leave() -> None:
         # Typer가 처리하도록 그대로 전달
         raise
     except Exception as e:
+        _log("LEAVE", "error", level="error", error=str(e))
         typer.secho(f"퇴실 처리 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
