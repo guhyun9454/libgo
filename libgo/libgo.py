@@ -406,6 +406,103 @@ def _pick_seat(cookie: str) -> Optional[str]:
     LOGGER.info(f"_pick_seat picked={picked}, seat_id={seat_id}")
     return seat_id
 
+# 새 헬퍼 함수: _pick_seat_by_number
+def _pick_seat_by_number(cookie: str) -> Optional[str]:
+    """
+    열람실을 먼저 고르고, 사용자가 보는 좌석 번호(예: 76)를 입력받아
+    해당 좌석의 seatId를 찾아 반환합니다.
+    - 현재 예약 가능한(빈) 좌석 중에서만 검색합니다.
+    """
+    # 1) 열람실 선택
+    room_choice = inquirer.select(
+        message="어느 열람실에서 예약할까요?",
+        choices=[f"{rid} — {name}" for rid, name in ROOMS.items()],
+        qmark="[?]",
+        pointer=">",
+    ).execute()
+    LOGGER.info(f"_pick_seat_by_number room_choice: {room_choice}")
+    try:
+        room_id = int(room_choice.split(" — ")[0])
+        LOGGER.info(f"_pick_seat_by_number parsed room_id: {room_id}")
+    except Exception:
+        typer.secho("열람실 선택 파싱 실패", fg=typer.colors.RED)
+        return None
+
+    # 2) 해당 열람실 좌석 목록 조회
+    url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
+    res = requests.get(
+        url,
+        headers={
+            "Cookie": cookie,
+            "User-Agent": _ua(),
+            "Accept": "application/json",
+        },
+        verify=False,
+    )
+    if res.status_code != 200:
+        typer.secho(f"[{ROOMS.get(room_id, room_id)}] 좌석 목록 조회 실패 ({res.status_code})", fg=typer.colors.RED)
+        return None
+
+    try:
+        seats_data = res.json().get("data", [])
+        LOGGER.info(f"_pick_seat_by_number seats_data_len: {len(seats_data)}")
+    except Exception as e:
+        typer.secho(f"좌석 목록 JSON 파싱 실패: {e}", fg=typer.colors.RED)
+        typer.echo(res.text)
+        return None
+
+    def _sid(s: dict):
+        return s.get("id") or s.get("seatId") or s.get("code") or s.get("seatCode")
+
+    def _sname(s: dict):
+        return s.get("name") or s.get("seatNo") or s.get("num") or str(_sid(s))
+
+    # 3) 좌석 번호 입력
+    seat_no = inquirer.text(
+        message="예약할 좌석 번호를 입력하세요 (예: 76):",
+        qmark="[?]",
+        validate=lambda x: len(x.strip()) > 0 or "좌석 번호는 필수입니다.",
+    ).execute().strip()
+    LOGGER.info(f"_pick_seat_by_number user_input seat_no={seat_no}")
+
+    # 4) 현재 예약 가능한 좌석 중에서 번호 일치하는 좌석 찾기
+    available = [s for s in seats_data if s.get("seatTime") is None]
+    LOGGER.info(f"_pick_seat_by_number available_count: {len(available)}")
+
+    matches = [s for s in available if str(_sname(s)) == seat_no]
+    # 전체 좌석 중 해당 번호가 있는지(단지 사용 중일 뿐인지)를 확인
+    all_matches = [s for s in seats_data if str(_sname(s)) == seat_no]
+    if not matches:
+        if all_matches:
+            # 좌석은 존재하지만 seatTime 등이 차 있어 예약 불가한 경우
+            try:
+                LOGGER.info(
+                    "_pick_seat_by_number seat_no=%s exists but not available: %s",
+                    seat_no,
+                    json.dumps(all_matches[0], ensure_ascii=False),
+                )
+            except Exception:
+                LOGGER.info(
+                    "_pick_seat_by_number seat_no=%s exists but not available (json dump failed)",
+                    seat_no,
+                )
+        else:
+            LOGGER.info(
+                "_pick_seat_by_number seat_no=%s not found in seats_data", seat_no
+            )
+        typer.secho(f"{seat_no}번 좌석은 현재 예약 가능하지 않습니다.", fg=typer.colors.YELLOW)
+        return None
+
+    seat = matches[0]
+    seat_id = _sid(seat)
+    if not seat_id:
+        typer.secho("선택한 좌석에서 seatId를 찾을 수 없습니다.", fg=typer.colors.RED)
+        return None
+
+    seat_id_str = str(seat_id)
+    LOGGER.info(f"_pick_seat_by_number resolved seat_no={seat_no}, seat_id={seat_id_str}")
+    return seat_id_str
+
 @app.command()
 def reserve() -> None:
     """
@@ -429,7 +526,7 @@ def reserve() -> None:
 
         mode = inquirer.select(
             message="좌석 선택 방법을 고르세요",
-            choices=["열람실에서 선택", "좌석 코드 직접 입력"],
+            choices=["열람실에서 선택", "좌석 번호 직접 입력"],
             qmark="[?]",
             pointer=">",
         ).execute()
@@ -438,17 +535,15 @@ def reserve() -> None:
         if mode == "열람실에서 선택":
             seat_id = _pick_seat(cookie) or ""
         else:
-            seat_id = inquirer.text(
-                message="예약할 좌석 코드(seatId)를 입력하세요:",
-                qmark="[?]",
-                validate=lambda x: len(x.strip()) > 0 or "좌석 코드는 필수입니다.",
-            ).execute().strip()
+            # 열람실을 선택한 뒤, 사용자가 보는 좌석 번호(예: 76)를 입력받아 seatId를 해석한다.
+            seat_id = _pick_seat_by_number(cookie) or ""
 
         LOGGER.info(f"reserve seat_id raw: {seat_id}")
 
         if not seat_id:
-            typer.secho("좌석 코드가 유효하지 않습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+            # 상위 선택 단계(_pick_seat / _pick_seat_by_number)에서 이미 사용자에게 메시지를 보여줬으므로
+            # 여기서는 조용히 함수만 종료한다.
+            return
 
         minutes_str = inquirer.text(
             message="이용 시간(분)을 입력하세요:",
@@ -516,6 +611,9 @@ def reserve() -> None:
 
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+    except typer.Exit:
+        # Typer가 처리하도록 그대로 전달
+        raise
     except Exception as e:
         typer.secho(f"좌석 예약 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
