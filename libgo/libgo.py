@@ -677,6 +677,13 @@ def reserve() -> None:
                     "이미 이용 중인 좌석이 있습니다.",
                     fg=typer.colors.YELLOW,
                 )
+            elif code == 1209:
+                # 모바일 앱에서는 "동일 좌석 재배정 대기 중입니다."로 표기되는 상황으로 추정
+                # (퇴실 직후 동일 좌석을 다시 잡을 때 등)
+                typer.secho(
+                    "동일 좌석 재배정 대기 중입니다.",
+                    fg=typer.colors.YELLOW,
+                )
             else:
                 typer.secho("좌석 예약 실패.", fg=typer.colors.RED)
                 typer.echo(f"code={code}, message={msg}")
