@@ -26,6 +26,13 @@ MOBILE_UA = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
 )
 
+ROOMS = {
+    8: "1F 제1열람실",
+    9: "2F 제2열람실",
+    10: "1F      벗터",
+    11: "2F      혜윰",
+}
+
 def _ua() -> str:
     return MOBILE_UA
 
@@ -91,6 +98,7 @@ def menu() -> None:
                     "로그인",
                     "내 좌석 정보",
                     "실시간 좌석 현황",
+                    "좌석 예약",
                     "로그아웃",
                     "나가기",
                 ],
@@ -122,6 +130,8 @@ def menu() -> None:
                 status()
             elif choice == "실시간 좌석 현황":
                 seats()
+            elif choice == "좌석 예약":
+                reserve()
             elif choice == "로그아웃":
                 logout()
             elif choice == "나가기":
@@ -233,17 +243,10 @@ def seats() -> None:
             typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
             raise typer.Exit(1)
 
-        rooms = {
-            8: "1F 제1열람실",
-            9: "2F 제2열람실",
-            10: "1F      벗터",
-            11: "2F      혜윰",
-        }
-
         typer.secho("\n=== 🪑 실시간 열람실 좌석 현황 ===\n", fg=typer.colors.CYAN, bold=True)
 
         for room_id in [8, 10, 11, 9]:
-            room_name = rooms[room_id]
+            room_name = ROOMS[room_id]
             url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
             res = requests.get(
                 url,
@@ -267,6 +270,168 @@ def seats() -> None:
 
     except Exception as e:
         typer.secho(f"좌석 정보를 불러오는 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
+
+def _pick_seat(cookie: str) -> Optional[str]:
+    """열람실을 먼저 고르고, 해당 열람실의 *빈 좌석* 목록에서 좌석을 선택해 seatId를 반환합니다."""
+    # 1) 열람실 선택
+    room_choice = inquirer.select(
+        message="어느 열람실에서 예약할까요?",
+        choices=[f"{rid} — {name}" for rid, name in ROOMS.items()],
+        qmark="[?]",
+        pointer=">",
+    ).execute()
+    try:
+        room_id = int(room_choice.split(" — ")[0])
+    except Exception:
+        typer.secho("열람실 선택 파싱 실패", fg=typer.colors.RED)
+        return None
+
+    # 2) 해당 열람실 좌석 목록 조회
+    url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
+    res = requests.get(
+        url,
+        headers={
+            "Cookie": cookie,
+            "User-Agent": _ua(),
+            "Accept": "application/json",
+        },
+        verify=False,
+    )
+    if res.status_code != 200:
+        typer.secho(f"[{ROOMS.get(room_id, room_id)}] 좌석 목록 조회 실패 ({res.status_code})", fg=typer.colors.RED)
+        return None
+
+    try:
+        seats_data = res.json().get("data", [])
+    except Exception as e:
+        typer.secho(f"좌석 목록 JSON 파싱 실패: {e}", fg=typer.colors.RED)
+        typer.echo(res.text)
+        return None
+
+    # 3) 빈 좌석만 필터링하고, 좌석 표기용 이름/아이디 필드 유연 처리
+    def _sid(s: dict):
+        return s.get("id") or s.get("seatId") or s.get("code") or s.get("seatCode")
+
+    def _sname(s: dict):
+        return s.get("name") or s.get("seatNo") or s.get("num") or str(_sid(s))
+
+    available = [s for s in seats_data if s.get("seatTime") is None]
+    if not available:
+        typer.secho(f"[{ROOMS.get(room_id, room_id)}] 현재 예약 가능한 좌석이 없습니다.", fg=typer.colors.YELLOW)
+        return None
+
+    choices = [
+        f"{_sname(s)} (id:{_sid(s)})" for s in available if _sid(s) is not None
+    ]
+    if not choices:
+        # 디버깅 도움: 좌석 객체의 키를 한 건 출력
+        typer.secho("좌석 객체에서 seatId를 찾지 못했습니다. 샘플 키를 출력합니다:", fg=typer.colors.RED)
+        if seats_data:
+            typer.echo(", ".join(sorted(seats_data[0].keys())))
+        return None
+
+    picked = inquirer.select(
+        message="예약할 좌석을 선택하세요",
+        choices=choices,
+        qmark="[?]",
+        pointer=">",
+        default=choices[0],
+    ).execute()
+
+    # '... (id:1234)'에서 id만 추출
+    m = re.search(r"id:(\d+)", picked)
+    if not m:
+        typer.secho("좌석 선택 파싱 실패", fg=typer.colors.RED)
+        return None
+    return m.group(1)
+
+@app.command()
+def reserve() -> None:
+    """
+    특정 좌석을 지정 시간(분) 만큼 사용(예약)합니다.
+    POST https://libseat.khu.ac.kr/libraries/seat
+    요청 바디: {"seatId": <좌석 코드>, "time": <분>}
+    성공 판단: 응답 JSON의 code === 1
+    """
+    try:
+        credentials = _get_credentials()
+        if not credentials:
+            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+
+        std_id, password = credentials
+        cookie = _perform_login(std_id, password)
+        if not cookie:
+            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        mode = inquirer.select(
+            message="좌석 선택 방법을 고르세요",
+            choices=["열람실에서 선택", "좌석 코드 직접 입력"],
+            qmark="[?]",
+            pointer=">",
+        ).execute()
+
+        if mode == "열람실에서 선택":
+            seat_id = _pick_seat(cookie) or ""
+        else:
+            seat_id = inquirer.text(
+                message="예약할 좌석 코드(seatId)를 입력하세요:",
+                qmark="[?]",
+                validate=lambda x: len(x.strip()) > 0 or "좌석 코드는 필수입니다.",
+            ).execute().strip()
+
+        if not seat_id:
+            typer.secho("좌석 코드가 유효하지 않습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        minutes_str = inquirer.text(
+            message="이용 시간(분)을 입력하세요:",
+            qmark="[?]",
+            default="60",
+            validate=lambda x: (x.isdigit() and int(x) > 0) or "양의 정수를 입력하세요.",
+        ).execute()
+        minutes = int(minutes_str)
+
+        res = requests.post(
+            "https://libseat.khu.ac.kr/libraries/seat",
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={"seatId": seat_id, "time": minutes},
+            verify=False,
+        )
+
+        try:
+            data = res.json()
+        except Exception:
+            typer.secho("응답 파싱 실패. 서버 응답:", fg=typer.colors.RED)
+            typer.echo(res.text)
+            raise typer.Exit(1)
+
+        code = data.get("code")
+        msg = data.get("msg") or data.get("message") or ""
+        # 일부 응답은 code 값이 1이 아닌데도 message가 SUCCESS로 오는 사례가 있어 보수적으로 처리
+        success = (code == 1) or (str(msg).upper() == "SUCCESS")
+
+        if success:
+            typer.secho("좌석 예약/사용 시작 성공!", fg=typer.colors.GREEN, bold=True)
+            typer.echo(f"seatId={seat_id}, time={minutes}분")
+            if msg:
+                typer.echo(f"서버 메시지: {msg}")
+        else:
+            typer.secho("좌석 예약 실패.", fg=typer.colors.RED)
+            typer.echo(f"code={code}, message={msg}")
+            # 디버깅을 위해 전체 JSON 출력
+            typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+
+    except KeyboardInterrupt:
+        typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+    except Exception as e:
+        typer.secho(f"좌석 예약 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
 @app.command()
 def whoami() -> None:
