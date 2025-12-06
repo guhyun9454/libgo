@@ -1,7 +1,7 @@
 # libgo
 
 ```bash
-pip install -e .
+pip install .
 libgo
 ```
 
