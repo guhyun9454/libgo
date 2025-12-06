@@ -35,6 +35,12 @@ ROOMS = {
     11: "2F      혜윰",
 }
 
+# 혜윰 1인석
+HYEYUM_SINGLE_SEAT_NUMBERS = {
+    *[str(i) for i in range(1, 28)],
+    *[str(i) for i in range(166, 189)],
+}
+
 LOG_DIR = Path(".libgo")
 LOG_FILE = LOG_DIR / "libgo.log"
 
@@ -497,9 +503,9 @@ def seats() -> None:
                 typer.secho(f"[{room_name}] 조회 실패 ({res.status_code})", fg=typer.colors.RED)
                 continue
 
-            data = res.json().get("data", [])
-            total = len(data)
-            available = sum(1 for s in data if s.get("seatTime") is None)
+            seats_data = res.json().get("data", [])
+            total = len(seats_data)
+            available = sum(1 for s in seats_data if s.get("seatTime") is None)
             available_percent = (available / total) * 100 if total > 0 else 0.0
             _log(
                 "SEATS",
@@ -510,6 +516,31 @@ def seats() -> None:
                 available_percent=f"{available_percent:.1f}",
             )
             typer.echo(f"[{room_name}] {available:>4} / {total:<4} ({int(round(available_percent))}%)")
+
+            # 혜윰 1인석은 별도로 한 줄 더 보여준다(구역 구분 없이 합산)
+            if room_id == 11:
+                def _sname(s: dict) -> str:
+                    return str(s.get("name") or s.get("seatNo") or s.get("num") or "")
+
+                single_seats = [s for s in seats_data if _sname(s) in HYEYUM_SINGLE_SEAT_NUMBERS]
+                total_single = len(single_seats)
+                available_single = sum(1 for s in single_seats if s.get("seatTime") is None)
+                single_percent = (available_single / total_single) * 100 if total_single > 0 else 0.0
+
+                _log(
+                    "SEATS",
+                    "hyeyum single seats summary",
+                    room=room_name,
+                    total_single=total_single,
+                    available_single=available_single,
+                    available_percent=f"{single_percent:.1f}",
+                )
+
+                # API 데이터 기준으로 매칭되는 1인석이 한 개 이상 있을 때만 출력
+                if total_single > 0:
+                    typer.echo(
+                        f"  └     1인석  {available_single:>4} / {total_single:<4} ({int(round(single_percent))}%)"
+                    )
 
     except typer.Exit:
         raise
