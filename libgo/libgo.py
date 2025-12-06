@@ -38,7 +38,7 @@ ROOMS = {
 
 HYEYUM_SINGLE_SEAT_NUMBERS = {
     *[str(i) for i in range(1, 28)],
-    *[str(i) for i in range(166, 189)],
+    *[str(i) for i in range(166, 188)],
 }
 
 RESERVE_INTERVAL_SHAPE = 4
