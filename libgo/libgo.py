@@ -7,9 +7,10 @@ import re
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 from datetime import datetime
 import time
+from random import gammavariate
 
 import typer
 from InquirerPy import inquirer
@@ -35,11 +36,23 @@ ROOMS = {
     11: "2F      혜윰",
 }
 
-# 혜윰 1인석
 HYEYUM_SINGLE_SEAT_NUMBERS = {
     *[str(i) for i in range(1, 28)],
     *[str(i) for i in range(166, 189)],
 }
+
+RESERVE_INTERVAL_SHAPE = 4
+RESERVE_INTERVAL_SCALE = 0.25
+RESERVE_INTERVAL_MIN = 0.25
+
+
+def _sleep() -> None:
+    time.sleep(
+        gammavariate(RESERVE_INTERVAL_SHAPE, RESERVE_INTERVAL_SCALE)
+        + RESERVE_INTERVAL_MIN
+    )
+
+WAITING_BAR = ["|", "/", "-", "\\"]
 
 LOG_DIR = Path(".libgo")
 LOG_FILE = LOG_DIR / "libgo.log"
@@ -64,7 +77,6 @@ LOGGER = _get_logger()
 SESSION_COOKIE: Optional[str] = None
 
 
-# 현재 CLI 세션에서 사용 중인 학번(로그인 컨텍스트)
 CURRENT_STD_ID: Optional[str] = None
 
 def _set_current_user(std_id: str) -> None:
@@ -202,6 +214,7 @@ def menu() -> None:
                 choices=[
                     "내 좌석 정보",
                     "좌석 현황 조회",
+                    "1인석 예매 대기",
                     "좌석 예약",
                     "좌석 퇴실",
                     "로그인",
@@ -219,6 +232,8 @@ def menu() -> None:
                 status()
             elif choice == "좌석 현황 조회":
                 seats()
+            elif choice == "1인석 예매 대기":
+                wait_single_seat()
             elif choice == "좌석 예약":
                 reserve()
             elif choice == "좌석 퇴실":
@@ -546,10 +561,209 @@ def seats() -> None:
                         )
                     )
 
+    except KeyboardInterrupt:
+        typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
     except typer.Exit:
         raise
     except Exception as e:
+        _log("SEATS", "error", level="error", error=str(e))
         typer.secho(f"좌석 정보를 불러오는 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
+
+
+def _find_available_hyeyum_single_seat(
+    cookie: str,
+    excluded_seat_ids: Optional[Set[str]] = None,
+) -> Optional[Tuple[str, str]]:
+    """혜윰 1인석 중 현재 예약 가능한 좌석을 찾아 (seat_id, seat_no) 반환.
+
+    excluded_seat_ids에 포함된 seatId는 후보에서 제외한다.
+    """
+    room_id = 11
+    url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
+    res = requests.get(
+        url,
+        headers={
+            "Cookie": cookie,
+            "User-Agent": _ua(),
+            "Accept": "application/json",
+        },
+        verify=False,
+    )
+    _log_http("GET", "request/response", url, status=res.status_code, room_id=room_id)
+
+    if res.status_code != 200:
+        _log("SEATS", "hyeyum single seats fetch failed", level="warning", status=res.status_code)
+        return None
+
+    try:
+        seats_data = res.json().get("data", [])
+    except Exception as e:
+        _log("SEATS", "hyeyum single seats json parse failed", level="warning", error=str(e))
+        return None
+
+    def _sid(s: dict) -> Optional[str]:
+        v = s.get("id") or s.get("seatId") or s.get("code") or s.get("seatCode")
+        return str(v) if v is not None else None
+
+    def _sname(s: dict) -> str:
+        return str(s.get("name") or s.get("seatNo") or s.get("num") or "")
+
+    excluded = excluded_seat_ids or set()
+
+    candidates = [
+        s for s in seats_data
+        if s.get("seatTime") is None
+        and _sname(s) in HYEYUM_SINGLE_SEAT_NUMBERS
+        and _sid(s) is not None
+        and _sid(s) not in excluded
+    ]
+
+    if not candidates:
+        return None
+
+    def _seat_sort_key(s: dict) -> int:
+        name = _sname(s)
+        try:
+            return int(name)
+        except Exception:
+            return 10**9
+
+    candidates.sort(key=_seat_sort_key)
+    seat = candidates[0]
+    seat_id = _sid(seat)
+    seat_no = _sname(seat)
+
+    if not seat_id or not seat_no:
+        return None
+
+    return seat_id, seat_no
+
+
+@app.command()
+def wait_single_seat() -> None:
+    """
+    혜윰 1인석이 비워질 때까지 대기하면서 자동으로 예약을 시도합니다.
+    - 대기 간격은 Gamma(α=4, β=0.25) + 최소 0.25초를 사용합니다.
+    - 성공 시 예약 결과와 함께 status()를 한 번 출력합니다.
+    """
+    try:
+        _log("CMD", "wait_single_seat", command="wait_single_seat")
+        credentials = _get_credentials()
+        if not credentials:
+            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
+            return
+
+        std_id, password = credentials
+        cookie = _get_or_login_cookie(std_id, password)
+        if not cookie:
+            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        minutes_str = inquirer.text(
+            message="혜윰 1인석 이용 시간(분)을 입력하세요:",
+            qmark="[?]",
+            default="240",
+            validate=lambda x: (x.isdigit() and int(x) > 0) or "양의 정수를 입력하세요.",
+        ).execute()
+        minutes = int(minutes_str)
+        _log("RESERVE", "wait_single_seat minutes input", minutes=minutes)
+
+        typer.secho("\n=== ⏳ 혜윰 1인석 예매 대기 시작 ===", fg=typer.colors.CYAN, bold=True)
+        typer.echo("빈 1인석이 감지되면 자동으로 예약을 시도합니다.")
+
+        start_ts = time.time()
+
+        excluded_seat_ids: Set[str] = set()
+
+        attempt = 0
+        while True:
+            attempt += 1
+            found = _find_available_hyeyum_single_seat(cookie, excluded_seat_ids)
+
+            if not found:
+                elapsed = int(time.time() - start_ts)
+                hours = elapsed // 3600
+                minutes_ = (elapsed % 3600) // 60
+                seconds = elapsed % 60
+
+                typer.echo(
+                    f"\r예매 대기 중... {WAITING_BAR[attempt & 3]} 시도: {attempt:4d} ({hours:02d}:{minutes_:02d}:{seconds:02d}) ",
+                    nl=False,
+                )
+                _sleep()
+                continue
+
+            seat_id, seat_no = found
+            _log("RESERVE", "hyeyum single seat found", seat_no=seat_no, seat_id=seat_id, attempt=attempt)
+            typer.secho(
+                f"\n✅ 혜윰 1인석 {seat_no}번 발견 — 예약 시도 중...",
+                fg=typer.colors.GREEN,
+                bold=True,
+            )
+
+            url = "https://libseat.khu.ac.kr/libraries/seat"
+            res = requests.post(
+                url,
+                headers={
+                    "Cookie": cookie,
+                    "User-Agent": _ua(),
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                json={"seatId": seat_id, "time": minutes},
+                verify=False,
+            )
+            _log_http("POST", "request/response", url, status=res.status_code, seatId=seat_id, minutes=minutes)
+
+            try:
+                data = res.json()
+            except Exception:
+                data = {}
+
+            code = data.get("code")
+            msg = data.get("msg") or data.get("message") or ""
+            _log("SERVER", "wait_single_seat reserve result", code=code, msg=msg, seat_no=seat_no, seat_id=seat_id)
+
+            if code == 1:
+                typer.secho("좌석 예약/사용 시작 성공!", fg=typer.colors.GREEN, bold=True)
+                typer.echo(f"좌석 번호: {seat_no}")
+                try:
+                    status()
+                except Exception:
+                    pass
+                break
+
+            # 1209: 동일 좌석 재배정 대기 제한 등으로 추정 — 해당 좌석은 이번 대기에서 제외
+            if code == 1209:
+                excluded_seat_ids.add(str(seat_id))
+                _log(
+                    "RESERVE",
+                    "exclude seat due to 1209",
+                    seat_no=seat_no,
+                    seat_id=seat_id,
+                )
+                typer.secho(
+                    f"{seat_no}번 좌석은 재예약 제한(1209)으로 이번 대기에서 제외합니다.",
+                    fg=typer.colors.YELLOW,
+                )
+                _sleep()
+                continue
+
+            # 기타 실패는 불필요한 메시지 노이즈를 줄여 간결 출력
+            if msg and str(msg).strip().upper() != "SUCCESS":
+                typer.secho(f"예약 실패: {msg}", fg=typer.colors.YELLOW)
+            else:
+                typer.secho("예약 실패. 다시 대기합니다.", fg=typer.colors.YELLOW)
+
+            _sleep()
+
+    except KeyboardInterrupt:
+        typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        _log("RESERVE", "wait_single_seat error", level="error", error=str(e))
+        typer.secho(f"1인석 예매 대기 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
 def _pick_seat(cookie: str) -> Optional[str]:
     """열람실을 먼저 고르고, 해당 열람실의 *빈 좌석* 목록에서 좌석을 선택해 seatId를 반환합니다."""
