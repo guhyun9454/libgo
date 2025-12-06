@@ -539,7 +539,11 @@ def seats() -> None:
                 # API 데이터 기준으로 매칭되는 1인석이 한 개 이상 있을 때만 출력
                 if total_single > 0:
                     typer.echo(
-                        f"  └     1인석  {available_single:>4} / {total_single:<4} ({int(round(single_percent))}%)"
+                        typer.style(
+                            f"  └     1인석  {available_single:>4} / {total_single:<4} ({int(round(single_percent))}%)",
+                            fg=typer.colors.BRIGHT_CYAN,
+                            bold=True,
+                        )
                     )
 
     except typer.Exit:
