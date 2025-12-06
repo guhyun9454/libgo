@@ -194,22 +194,30 @@ def menu() -> None:
             choice = inquirer.select(
                 message="메뉴 선택 (↕:이동, Enter:선택)",
                 choices=[
-                    "로그인",
                     "내 좌석 정보",
-                    "실시간 좌석 현황",
+                    "좌석 현황 조회",
                     "좌석 예약",
-                    "퇴실",
+                    "좌석 퇴실",
+                    "로그인",
                     "로그아웃",
-                    "나가기",
+                    "종료",
                 ],
-                default="로그인",
+                default="내 좌석 정보",
                 qmark="[?]",
                 pointer=">",
             ).execute()
 
             _log("MENU", "choice", choice=choice)
 
-            if choice == "로그인":
+            if choice == "내 좌석 정보":
+                status()
+            elif choice == "좌석 현황 조회":
+                seats()
+            elif choice == "좌석 예약":
+                reserve()
+            elif choice == "좌석 퇴실":
+                leave()
+            elif choice == "로그인":
                 creds = _get_credentials()
                 from_keyring = creds is not None
 
@@ -233,17 +241,9 @@ def menu() -> None:
                         typer.secho("로그인 성공! 아이디 비밀번호를 안전하게 저장했습니다.", fg=typer.colors.GREEN)
                 else:
                     typer.secho("로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.", fg=typer.colors.RED)
-            elif choice == "내 좌석 정보":
-                status()
-            elif choice == "실시간 좌석 현황":
-                seats()
-            elif choice == "좌석 예약":
-                reserve()
-            elif choice == "퇴실":
-                leave()
             elif choice == "로그아웃":
                 logout()
-            elif choice == "나가기":
+            elif choice == "종료":
                 raise typer.Exit(0)
             else:
                 typer.echo("아직 구현되지 않은 항목입니다.")
