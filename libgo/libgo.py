@@ -216,6 +216,7 @@ def menu() -> None:
                     "좌석 현황 조회",
                     "1인석 예매 대기",
                     "좌석 예약",
+                    "좌석 연장",
                     "좌석 퇴실",
                     "로그인",
                     "로그아웃",
@@ -236,6 +237,8 @@ def menu() -> None:
                 wait_single_seat()
             elif choice == "좌석 예약":
                 reserve()
+            elif choice == "좌석 연장":
+                extend()
             elif choice == "좌석 퇴실":
                 leave()
             elif choice == "로그인":
@@ -1074,6 +1077,7 @@ def reserve() -> None:
                     json.dumps(data, ensure_ascii=False),
                 )
 
+
     except KeyboardInterrupt:
         typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
     except typer.Exit:
@@ -1082,6 +1086,211 @@ def reserve() -> None:
     except Exception as e:
         _log("RESERVE", "error", level="error", error=str(e))
         typer.secho(f"좌석 예약 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
+
+
+# 좌석 연장 명령 추가
+
+@app.command()
+def extend() -> None:
+    """
+    현재 이용(또는 입실 대기) 중인 좌석의 이용 시간을 연장합니다.
+
+    POST https://libseat.khu.ac.kr/libraries/seat-extension
+    요청 바디:
+      {
+        "code": <좌석 코드>,
+        "groupCode": <열람실 그룹 코드>,
+        "time": <연장 시간(분)>,
+        "beacon": [{"major": 1, "minor": 1}]
+      }
+
+    성공 판단(레퍼런스 구현 기준):
+      - 응답 JSON의 data == 1
+      - 또는 code == 1 을 성공으로 간주(서버 구현 차이 대비)
+    """
+    try:
+        _log("CMD", "extend", command="extend")
+        credentials = _get_credentials()
+        if not credentials:
+            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
+            return
+
+        std_id, password = credentials
+        cookie = _get_or_login_cookie(std_id, password)
+        if not cookie:
+            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        # 1) 현재 mySeat 정보 조회
+        status_url = "https://libseat.khu.ac.kr/user/my-status"
+        res = requests.get(
+            status_url,
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+            },
+            verify=False,
+        )
+        _log_http("GET", "request/response", status_url, status=res.status_code)
+        res.raise_for_status()
+
+        try:
+            data = res.json()
+        except Exception as e:
+            typer.secho(f"JSON 파싱 오류: {e}", fg=typer.colors.RED)
+            typer.echo(res.text)
+            raise typer.Exit(1)
+
+        my_seat = data.get("data", {}).get("mySeat")
+        if not my_seat:
+            typer.secho("현재 이용 중이거나 예약된 좌석이 없습니다.", fg=typer.colors.YELLOW)
+            return
+
+        seat = my_seat.get("seat", {}) or {}
+        group = seat.get("group") or my_seat.get("group") or {}
+
+        # 좌석 코드(서버에서 code로 요구)
+        seat_code = (
+            seat.get("code")
+            or seat.get("seatCode")
+            or seat.get("id")
+            or seat.get("seatId")
+            or my_seat.get("seatCode")
+        )
+
+        # 열람실 그룹 코드(레퍼런스 서버에서 groupCode로 전달)
+        group_code = (
+            group.get("code")
+            or group.get("groupCode")
+            or group.get("id")
+            or my_seat.get("groupCode")
+        )
+
+        seat_name = (
+            seat.get("name")
+            or seat.get("seatNo")
+            or seat.get("num")
+            or "알 수 없음"
+        )
+        room_name = group.get("name", "알 수 없음")
+
+        if not seat_code or not group_code:
+            _log(
+                "EXTEND",
+                "missing seat_code or group_code",
+                level="warning",
+                seatCode=seat_code,
+                groupCode=group_code,
+            )
+            typer.secho(
+                "연장에 필요한 좌석 코드 또는 열람실 그룹 코드를 찾을 수 없습니다.",
+                fg=typer.colors.RED,
+            )
+            return
+
+        _log(
+            "EXTEND",
+            "target seat resolved",
+            seatCode=str(seat_code),
+            groupCode=str(group_code),
+            seat=seat_name,
+            room=room_name,
+        )
+
+        typer.secho("\n=== ⏱ 좌석 연장 ===", fg=typer.colors.CYAN, bold=True)
+        typer.echo(f"열람실     : {room_name}")
+        typer.echo(f"좌석 번호  : {seat_name}")
+        typer.echo(f"seatCode   : {seat_code}")
+        typer.echo(f"groupCode  : {group_code}")
+
+        # 2) 연장 시간 입력
+        minutes_str = inquirer.text(
+            message="연장할 시간(분)을 입력하세요:",
+            qmark="[?]",
+            default="240",
+            validate=lambda x: (x.isdigit() and int(x) > 0) or "양의 정수를 입력하세요.",
+        ).execute()
+        minutes = int(minutes_str)
+        _log("EXTEND", "minutes input", minutes=minutes)
+
+        # 3) 연장 API 호출
+        extend_url = "https://libseat.khu.ac.kr/libraries/seat-extension"
+        payload = {
+            "code": str(seat_code),
+            "groupCode": str(group_code),
+            "time": minutes,
+            "beacon": [
+                {"major": 1, "minor": 1}
+            ],
+        }
+
+        extend_res = requests.post(
+            extend_url,
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            verify=False,
+        )
+        _log_http("POST", "request/response", extend_url, status=extend_res.status_code, seatCode=seat_code, groupCode=group_code, minutes=minutes)
+
+        try:
+            body = extend_res.json()
+        except Exception:
+            body = {}
+
+        code = body.get("code")
+        msg = body.get("msg") or body.get("message") or ""
+        data_flag = body.get("data")
+
+        _log(
+            "SERVER",
+            "extend result",
+            code=code,
+            msg=msg,
+            data=data_flag,
+            seatCode=str(seat_code),
+            groupCode=str(group_code),
+            minutes=minutes,
+        )
+
+        success = False
+        # 레퍼런스 서버 구현: data == 1
+        if data_flag == 1 or str(data_flag) == "1":
+            success = True
+        # 서버 구현 차이 대비: code == 1 도 성공으로 간주
+        if code == 1 or str(code) == "1":
+            success = True
+        # JSON이 비어도 HTTP 2xx면 성공 가능성 고려
+        if not body and 200 <= extend_res.status_code < 300:
+            success = True
+
+        if success:
+            typer.secho("좌석 연장 성공!", fg=typer.colors.GREEN, bold=True)
+            if msg and str(msg).strip().upper() != "SUCCESS":
+                typer.echo(f"서버 메시지: {msg}")
+            # 연장 후 상태 새로고침
+            try:
+                status()
+            except Exception:
+                pass
+        else:
+            if msg:
+                typer.secho(f"좌석 연장 실패: {msg}", fg=typer.colors.YELLOW)
+            else:
+                typer.secho("좌석 연장에 실패했습니다.", fg=typer.colors.RED)
+
+    except KeyboardInterrupt:
+        typer.secho("\nCancelled by user", fg=typer.colors.YELLOW)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        _log("EXTEND", "error", level="error", error=str(e))
+        typer.secho(f"좌석 연장 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
 
 @app.command()
 def whoami() -> None:
