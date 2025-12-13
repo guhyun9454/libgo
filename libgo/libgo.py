@@ -11,6 +11,8 @@ from typing import Optional, Tuple, Set
 from datetime import datetime
 import time
 from random import gammavariate
+import platform
+import subprocess
 
 import typer
 from InquirerPy import inquirer
@@ -46,11 +48,49 @@ RESERVE_INTERVAL_SCALE = 0.25
 RESERVE_INTERVAL_MIN = 0.25
 
 
+
 def _sleep() -> None:
     time.sleep(
         gammavariate(RESERVE_INTERVAL_SHAPE, RESERVE_INTERVAL_SCALE)
         + RESERVE_INTERVAL_MIN
     )
+
+
+def _notify(title: str, message: str) -> None:
+    """터미널에서 작업이 끝났을 때 OS 알림을 띄웁니다.
+
+    - macOS: osascript(Notification Center)
+    - Linux: notify-send
+    - 그 외/실패 시: 터미널 벨 + 로그만 남김
+
+    알림 실패는 프로그램 흐름을 막지 않습니다.
+    """
+    try:
+        # 1) 터미널 벨 (가능하면 항상)
+        try:
+            print("\a", end="", flush=True)
+        except Exception:
+            pass
+
+        system = platform.system().lower()
+
+        if system == "darwin":
+            # macOS Notification Center
+            # osascript -e 'display notification "message" with title "title"'
+            script = f'display notification "{message.replace("\\\"", "\\\\\\\"")}" with title "{title.replace("\\\"", "\\\\\\\"")}"'
+            subprocess.run(["osascript", "-e", script], check=False)
+            return
+
+        if system == "linux":
+            # notify-send가 있으면 사용
+            subprocess.run(["notify-send", title, message], check=False)
+            return
+
+        # Windows 등: 기본 구현은 벨/출력으로 대체
+        _log("NOTIFY", "notification fallback", title=title, message=message)
+
+    except Exception as e:
+        _log("NOTIFY", "notification failed", level="warning", error=str(e), title=title)
 
 WAITING_BAR = ["|", "/", "-", "\\"]
 
@@ -349,13 +389,17 @@ def status() -> None:
         enter_time_str = format_time(enter_time_ms) if enter_time_ms else "알 수 없음"
         expire_time_str = format_time(expire_time_ms) if expire_time_ms else "알 수 없음"
 
-        # 상태 문자열 매핑: 예약 완료(입실 대기)와 이용 중을 구분해서 표시
-        if state == 5 and enter_time_ms:
-            status_str = "이용 중"
-        elif state == 0 and enter_time_ms is None and out_time_ms is None:
-            status_str = "입실 대기(예약 완료)"
-        else:
+        # 상태 문자열 매핑: 서버 state 값과 inTime(outTime) 필드가 항상 동시에 채워지지 않는 케이스가 있어
+        # outTime/expireTime 등을 함께 참고해 표시한다.
+        if out_time_ms:
             status_str = "퇴실 또는 종료"
+        elif state == 0 and enter_time_ms is None:
+            status_str = "입실 대기(예약 완료)"
+        elif state == 5:
+            # 일부 케이스에서 state=5인데 inTime이 비어있을 수 있음
+            status_str = "이용 중"
+        else:
+            status_str = f"상태 미확인(state={state})"
 
         # 남은 시간 및 마감(입실 마감/만료) 정보 계산
         now_ts = time.time()
@@ -391,6 +435,7 @@ def status() -> None:
             f"좌석 번호  : {seat_name}",
             f"예약 시간  : {confirm_time_str}",
         ]
+        lines.append(f"상태 코드  : {state}")
 
         # 실제 입실한 경우에만 입실 시간 표기
         if state == 5 and enter_time_ms:
@@ -642,6 +687,143 @@ def _find_available_hyeyum_single_seat(
     return seat_id, seat_no
 
 
+# === 내부 헬퍼 함수 추가 ===
+def _fetch_my_seat(cookie: str) -> Optional[dict]:
+    """현재 계정의 mySeat 정보를 조회해 반환합니다. 없으면 None."""
+    status_url = "https://libseat.khu.ac.kr/user/my-status"
+    try:
+        res = requests.get(
+            status_url,
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+            },
+            verify=False,
+        )
+        _log_http("GET", "request/response", status_url, status=res.status_code)
+        if res.status_code != 200:
+            return None
+        try:
+            data = res.json()
+        except Exception:
+            return None
+        return data.get("data", {}).get("mySeat")
+    except Exception as e:
+        _log("STATUS", "fetch mySeat failed", level="warning", error=str(e))
+        return None
+
+
+def _resolve_seat_code_from_myseat(my_seat: dict) -> Optional[str]:
+    """mySeat 응답에서 퇴실 API에 필요한 seatCode를 최대한 유연하게 추출합니다."""
+    seat = my_seat.get("seat", {}) or {}
+    seat_code = (
+        seat.get("code")
+        or seat.get("seatCode")
+        or seat.get("id")
+        or seat.get("seatId")
+        or my_seat.get("seatCode")
+    )
+    if seat_code is None:
+        return None
+    return str(seat_code)
+
+
+def _leave_current_seat(cookie: str, *, silent: bool = True) -> bool:
+    """현재 이용/예약 중인 좌석이 있으면 자동 퇴실 처리합니다.
+
+    - 좌석이 없으면 True
+    - 퇴실 성공 시 True
+    - 퇴실 실패 시 False
+
+    silent=True면 사용자에게는 최소한의 메시지만 출력합니다.
+    """
+    my_seat = _fetch_my_seat(cookie)
+    if not my_seat:
+        return True
+
+    seat = my_seat.get("seat", {}) or {}
+    group = seat.get("group") or my_seat.get("group") or {}
+
+    seat_name = (
+        seat.get("name")
+        or seat.get("seatNo")
+        or seat.get("num")
+        or "알 수 없음"
+    )
+    room_name = group.get("name", "알 수 없음")
+
+    seat_code = _resolve_seat_code_from_myseat(my_seat)
+    if not seat_code:
+        _log("LEAVE", "auto leave failed: missing seatCode", level="warning")
+        if not silent:
+            typer.secho("현재 좌석의 코드(seatCode)를 찾을 수 없습니다.", fg=typer.colors.RED)
+        return False
+
+    _log(
+        "LEAVE",
+        "auto leave start",
+        seat=seat_name,
+        room=room_name,
+        seatCode=seat_code,
+    )
+
+    if not silent:
+        typer.secho("\n=== 자동 퇴실 ===", fg=typer.colors.CYAN, bold=True)
+        typer.echo(f"열람실     : {room_name}")
+        typer.echo(f"좌석 번호  : {seat_name}")
+        typer.echo(f"seatCode   : {seat_code}")
+
+    leave_url = f"https://libseat.khu.ac.kr/libraries/leave/{seat_code}"
+    try:
+        leave_res = requests.post(
+            leave_url,
+            headers={
+                "Cookie": cookie,
+                "User-Agent": _ua(),
+                "Accept": "application/json",
+            },
+            verify=False,
+        )
+        _log_http("POST", "request/response", leave_url, status=leave_res.status_code, seatCode=seat_code)
+
+        success = False
+        msg = ""
+        code = None
+
+        try:
+            body = leave_res.json()
+            code = body.get("code")
+            msg = body.get("msg") or body.get("message") or ""
+            _log("SERVER", "auto leave result", code=code, msg=msg)
+            if code == 1 or str(code) == "1":
+                success = True
+        except Exception:
+            # JSON이 아니더라도 2xx면 성공으로 간주
+            if 200 <= leave_res.status_code < 300:
+                success = True
+
+        if success:
+            _log("LEAVE", "auto leave success", seatCode=seat_code)
+            if not silent:
+                typer.secho("퇴실 처리 성공!", fg=typer.colors.GREEN, bold=True)
+            return True
+
+        _log("LEAVE", "auto leave failed", level="warning", seatCode=seat_code, code=code, msg=msg)
+        if not silent:
+            if msg:
+                typer.secho(f"퇴실 처리 실패: {msg}", fg=typer.colors.RED)
+            else:
+                typer.secho("퇴실 처리에 실패했습니다.", fg=typer.colors.RED)
+        return False
+
+    except Exception as e:
+        _log("LEAVE", "auto leave error", level="error", error=str(e), seatCode=seat_code)
+        if not silent:
+            typer.secho(f"퇴실 처리 중 오류가 발생했습니다: {e}", fg=typer.colors.RED)
+        return False
+
+
 @app.command()
 def wait_single_seat() -> None:
     """
@@ -675,7 +857,6 @@ def wait_single_seat() -> None:
         typer.echo("빈 1인석이 감지되면 자동으로 예약을 시도합니다.")
 
         start_ts = time.time()
-
         excluded_seat_ids: Set[str] = set()
 
         attempt = 0
@@ -730,11 +911,109 @@ def wait_single_seat() -> None:
             if code == 1:
                 typer.secho("좌석 예약/사용 시작 성공!", fg=typer.colors.GREEN, bold=True)
                 typer.echo(f"좌석 번호: {seat_no}")
+                _notify("libgo 좌석 예약 성공", f"혜윰 1인석 {seat_no}번 ({minutes}분)")
                 try:
                     status()
                 except Exception:
                     pass
                 break
+
+            # 1206: 이미 다른 좌석을 이용 중인 상태로 추정
+            # - 좌석이 실제로 비워졌을 때에만 퇴실해야 하므로, 1206이 뜬 경우에만 자동 퇴실을 시도한다.
+            # - 퇴실 성공 시, 방금 발견한 동일 좌석에 대해 즉시 1회 재예약을 시도한다.
+            if code == 1206:
+                _log(
+                    "RESERVE",
+                    "reserve rejected with 1206; attempting auto leave then immediate retry",
+                    seat_no=seat_no,
+                    seat_id=seat_id,
+                )
+                typer.secho(
+                    "현재 다른 좌석을 이용/예약 중이라 예약이 거절되었습니다(1206). 동일 좌석 예약을 위해 자동 퇴실 후 즉시 재시도합니다.",
+                    fg=typer.colors.YELLOW,
+                )
+
+                left_ok = _leave_current_seat(cookie, silent=True)
+                if not left_ok:
+                    typer.secho(
+                        "자동 퇴실에 실패해 동일 좌석 재예약을 진행할 수 없습니다. 계속 대기합니다.",
+                        fg=typer.colors.YELLOW,
+                    )
+                    _sleep()
+                    continue
+
+                # 퇴실 직후 동일 좌석에 대해 1회 즉시 재시도
+                retry_res = requests.post(
+                    url,
+                    headers={
+                        "Cookie": cookie,
+                        "User-Agent": _ua(),
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                    json={"seatId": seat_id, "time": minutes},
+                    verify=False,
+                )
+                _log_http(
+                    "POST",
+                    "request/response",
+                    url,
+                    status=retry_res.status_code,
+                    seatId=seat_id,
+                    minutes=minutes,
+                    retry="after_leave",
+                )
+
+                try:
+                    retry_data = retry_res.json()
+                except Exception:
+                    retry_data = {}
+
+                retry_code = retry_data.get("code")
+                retry_msg = retry_data.get("msg") or retry_data.get("message") or ""
+                _log(
+                    "SERVER",
+                    "wait_single_seat reserve retry result",
+                    code=retry_code,
+                    msg=retry_msg,
+                    seat_no=seat_no,
+                    seat_id=seat_id,
+                )
+
+                if retry_code == 1:
+                    typer.secho("좌석 예약/사용 시작 성공!", fg=typer.colors.GREEN, bold=True)
+                    typer.echo(f"좌석 번호: {seat_no}")
+                    _notify("libgo 좌석 예약 성공", f"혜윰 1인석 {seat_no}번 ({minutes}분)")
+                    try:
+                        status()
+                    except Exception:
+                        pass
+                    break
+
+                # 재시도에서도 1209가 뜨면 이번 대기에서 제외
+                if retry_code == 1209:
+                    excluded_seat_ids.add(str(seat_id))
+                    _log(
+                        "RESERVE",
+                        "exclude seat due to 1209 after retry",
+                        seat_no=seat_no,
+                        seat_id=seat_id,
+                    )
+                    typer.secho(
+                        f"{seat_no}번 좌석은 재예약 제한(1209)으로 이번 대기에서 제외합니다.",
+                        fg=typer.colors.YELLOW,
+                    )
+                    _sleep()
+                    continue
+
+                # 그 외 실패는 메시지 간결 출력 후 다시 대기
+                if retry_msg and str(retry_msg).strip().upper() != "SUCCESS":
+                    typer.secho(f"재시도 예약 실패: {retry_msg}", fg=typer.colors.YELLOW)
+                else:
+                    typer.secho("재시도 예약 실패. 다시 대기합니다.", fg=typer.colors.YELLOW)
+
+                _sleep()
+                continue
 
             # 1209: 동일 좌석 재배정 대기 제한 등으로 추정 — 해당 좌석은 이번 대기에서 제외
             if code == 1209:
@@ -1034,6 +1313,7 @@ def reserve() -> None:
         if success:
             typer.secho("좌석 예약/사용 시작 성공!", fg=typer.colors.GREEN, bold=True)
             typer.echo(f"seatId={seat_id}, time={minutes}분")
+            _notify("libgo 좌석 예약 성공", f"seatId={seat_id} ({minutes}분)")
             if msg:
                 typer.echo(f"서버 메시지: {msg}")
             # 정확한 만료 시각(expireTime)을 확인하기 위해 한 번 status()를 호출한다.
@@ -1510,35 +1790,8 @@ def leave() -> None:
             typer.secho("퇴실을 취소했습니다.", fg=typer.colors.YELLOW)
             return
 
-        # 2) 실제 퇴실 API 호출
-        leave_url = f"https://libseat.khu.ac.kr/libraries/leave/{seat_code}"
-        leave_res = requests.post(
-            leave_url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-            },
-            verify=False,
-        )
-        _log_http("POST", "request/response", leave_url, status=leave_res.status_code, seatCode=seat_code)
-
-        success = False
-        msg = ""
-        code = None
-
-        try:
-            body = leave_res.json()
-            code = body.get("code")
-            msg = body.get("msg") or body.get("message") or ""
-            _log("SERVER", "leave result", code=code, msg=msg)
-            if code == 1:
-                success = True
-        except Exception:
-            # JSON 응답이 아닐 경우 HTTP 상태 코드 기준으로만 성공 여부 판정
-            if 200 <= leave_res.status_code < 300:
-                success = True
-
+        # 2) 실제 퇴실 API 호출 (공용 헬퍼 사용)
+        success = _leave_current_seat(cookie, silent=False)
         if success:
             typer.secho("퇴실 처리 성공!", fg=typer.colors.GREEN, bold=True)
         else:
