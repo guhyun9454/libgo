@@ -175,6 +175,38 @@ def _get_or_login_cookie(std_id: str, password: str) -> Optional[str]:
     return cookie
 
 
+def _require_cookie_or_exit() -> str:
+    """자격 증명을 읽고 필요 시 로그인하여 쿠키를 확보합니다.
+
+    - 자격 증명이 없으면 경고 메시지를 출력하고 즉시 종료합니다.
+    - 비밀번호가 없거나 로그인/쿠키 확보에 실패하면 오류 메시지를 출력하고 즉시 종료합니다.
+
+    이 함수가 정상 반환하면 cookie는 항상 유효한 문자열입니다.
+    """
+    credentials = _get_credentials()
+    if not credentials:
+        typer.secho(
+            "로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(1)
+
+    std_id, password = credentials
+    if not password:
+        typer.secho(
+            "저장된 비밀번호가 없습니다. 로그인 메뉴에서 다시 로그인하세요.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(1)
+
+    cookie = _get_or_login_cookie(std_id, password)
+    if not cookie:
+        typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    return cookie
+
+
 def _ua() -> str:
     return MOBILE_UA
 
@@ -342,15 +374,7 @@ def status() -> None:
     """
     try:
         _log("CMD", "status", command="status")
-        credentials = _get_credentials()
-        if not credentials:
-            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            return
-        std_id, password = credentials
-        cookie = _get_or_login_cookie(std_id, password)
-        if not cookie:
-            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+        cookie = _require_cookie_or_exit()
         res = requests.get(
             "https://libseat.khu.ac.kr/user/my-status",
             headers=_headers(cookie),
@@ -553,16 +577,7 @@ def seats() -> None:
     """
     try:
         _log("CMD", "seats", command="seats")
-        credentials = _get_credentials()
-        if not credentials:
-            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            return
-
-        std_id, password = credentials
-        cookie = _get_or_login_cookie(std_id, password)
-        if not cookie:
-            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+        cookie = _require_cookie_or_exit()
 
         typer.secho("\n=== 🪑 실시간 열람실 좌석 현황 ===\n", fg=typer.colors.CYAN, bold=True)
 
@@ -835,16 +850,7 @@ def wait_single_seat() -> None:
     """
     try:
         _log("CMD", "wait_single_seat", command="wait_single_seat")
-        credentials = _get_credentials()
-        if not credentials:
-            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            return
-
-        std_id, password = credentials
-        cookie = _get_or_login_cookie(std_id, password)
-        if not cookie:
-            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+        cookie = _require_cookie_or_exit()
 
         minutes_str = inquirer.text(
             message="혜윰 1인석 이용 시간(분)을 입력하세요:",
@@ -1223,16 +1229,7 @@ def reserve() -> None:
     """
     try:
         _log("CMD", "reserve", command="reserve")
-        credentials = _get_credentials()
-        if not credentials:
-            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            return
-
-        std_id, password = credentials
-        cookie = _get_or_login_cookie(std_id, password)
-        if not cookie:
-            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+        cookie = _require_cookie_or_exit()
 
         mode = inquirer.select(
             message="좌석 선택 방법을 고르세요",
@@ -1369,16 +1366,7 @@ def extend() -> None:
     """
     try:
         _log("CMD", "extend", command="extend")
-        credentials = _get_credentials()
-        if not credentials:
-            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            return
-
-        std_id, password = credentials
-        cookie = _get_or_login_cookie(std_id, password)
-        if not cookie:
-            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+        cookie = _require_cookie_or_exit()
 
         # 1) 현재 mySeat 정보 조회
         status_url = "https://libseat.khu.ac.kr/user/my-status"
@@ -1664,16 +1652,7 @@ def leave() -> None:
     """현재 이용 중인 좌석을 퇴실 처리합니다."""
     try:
         _log("CMD", "leave", command="leave")
-        credentials = _get_credentials()
-        if not credentials:
-            typer.secho("로그인이 필요합니다. 먼저 로그인 메뉴에서 로그인하세요.", fg=typer.colors.YELLOW)
-            return
-
-        std_id, password = credentials
-        cookie = _get_or_login_cookie(std_id, password)
-        if not cookie:
-            typer.secho("로그인 실패: 쿠키를 얻을 수 없습니다.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+        cookie = _require_cookie_or_exit()
 
         # 1) 현재 mySeat 정보 조회
         status_url = "https://libseat.khu.ac.kr/user/my-status"
