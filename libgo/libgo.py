@@ -178,6 +178,26 @@ def _get_or_login_cookie(std_id: str, password: str) -> Optional[str]:
 def _ua() -> str:
     return MOBILE_UA
 
+
+# === 공통 헤더 생성 헬퍼 ===
+from typing import Optional
+def _headers(
+    cookie: str,
+    *,
+    accept: str = "application/json",
+    content_type: Optional[str] = None,
+) -> dict:
+    """LibSeat API 호출에 공통으로 쓰는 요청 헤더를 생성합니다."""
+    h = {
+        "Cookie": cookie,
+        "User-Agent": _ua(),
+    }
+    if accept:
+        h["Accept"] = accept
+    if content_type:
+        h["Content-Type"] = content_type
+    return h
+
 def _save_credentials(std_id: str, password: str) -> None:
     try:
         keyring.set_password(SERVICE, ID_KEY, std_id)
@@ -333,11 +353,7 @@ def status() -> None:
             raise typer.Exit(1)
         res = requests.get(
             "https://libseat.khu.ac.kr/user/my-status",
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-            },
+            headers=_headers(cookie),
             verify=False,
         )
         res.raise_for_status()
@@ -555,11 +571,7 @@ def seats() -> None:
             url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
             res = requests.get(
                 url,
-                headers={
-                    "Cookie": cookie,
-                    "User-Agent": _ua(),
-                    "Accept": "application/json",
-                },
+                headers=_headers(cookie),
                 verify=False,
             )
             _log_http("GET", "request/response", url, status=res.status_code, room_id=room_id)
@@ -632,11 +644,7 @@ def _find_available_hyeyum_single_seat(
     url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
     res = requests.get(
         url,
-        headers={
-            "Cookie": cookie,
-            "User-Agent": _ua(),
-            "Accept": "application/json",
-        },
+        headers=_headers(cookie),
         verify=False,
     )
     _log_http("GET", "request/response", url, status=res.status_code, room_id=room_id)
@@ -696,11 +704,7 @@ def _fetch_my_seat(cookie: str) -> Optional[dict]:
     try:
         res = requests.get(
             status_url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-            },
+            headers=_headers(cookie),
             verify=False,
         )
         _log_http("GET", "request/response", status_url, status=res.status_code)
@@ -780,11 +784,7 @@ def _leave_current_seat(cookie: str, *, silent: bool = True) -> bool:
     try:
         leave_res = requests.post(
             leave_url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-            },
+            headers=_headers(cookie),
             verify=False,
         )
         _log_http("POST", "request/response", leave_url, status=leave_res.status_code, seatCode=seat_code)
@@ -890,12 +890,7 @@ def wait_single_seat() -> None:
             url = "https://libseat.khu.ac.kr/libraries/seat"
             res = requests.post(
                 url,
-                headers={
-                    "Cookie": cookie,
-                    "User-Agent": _ua(),
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
+                headers=_headers(cookie, content_type="application/json"),
                 json={"seatId": seat_id, "time": minutes},
                 verify=False,
             )
@@ -947,12 +942,7 @@ def wait_single_seat() -> None:
                 # 퇴실 직후 동일 좌석에 대해 1회 즉시 재시도
                 retry_res = requests.post(
                     url,
-                    headers={
-                        "Cookie": cookie,
-                        "User-Agent": _ua(),
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
+                    headers=_headers(cookie, content_type="application/json"),
                     json={"seatId": seat_id, "time": minutes},
                     verify=False,
                 )
@@ -1070,11 +1060,7 @@ def _pick_seat(cookie: str) -> Optional[str]:
     url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
     res = requests.get(
         url,
-        headers={
-            "Cookie": cookie,
-            "User-Agent": _ua(),
-            "Accept": "application/json",
-        },
+        headers=_headers(cookie),
         verify=False,
     )
     if res.status_code != 200:
@@ -1156,11 +1142,7 @@ def _pick_seat_by_number(cookie: str) -> Optional[str]:
     url = f"https://libseat.khu.ac.kr/libraries/seats/{room_id}"
     res = requests.get(
         url,
-        headers={
-            "Cookie": cookie,
-            "User-Agent": _ua(),
-            "Accept": "application/json",
-        },
+        headers=_headers(cookie),
         verify=False,
     )
     if res.status_code != 200:
@@ -1285,12 +1267,7 @@ def reserve() -> None:
         url = "https://libseat.khu.ac.kr/libraries/seat"
         res = requests.post(
             url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
+            headers=_headers(cookie, content_type="application/json"),
             json={"seatId": seat_id, "time": minutes},
             verify=False,
         )
@@ -1407,11 +1384,7 @@ def extend() -> None:
         status_url = "https://libseat.khu.ac.kr/user/my-status"
         res = requests.get(
             status_url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-            },
+            headers=_headers(cookie),
             verify=False,
         )
         _log_http("GET", "request/response", status_url, status=res.status_code)
@@ -1509,12 +1482,7 @@ def extend() -> None:
 
         extend_res = requests.post(
             extend_url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
+            headers=_headers(cookie, content_type="application/json"),
             json=payload,
             verify=False,
         )
@@ -1711,11 +1679,7 @@ def leave() -> None:
         status_url = "https://libseat.khu.ac.kr/user/my-status"
         res = requests.get(
             status_url,
-            headers={
-                "Cookie": cookie,
-                "User-Agent": _ua(),
-                "Accept": "application/json",
-            },
+            headers=_headers(cookie),
             verify=False,
         )
         _log_http("GET", "request/response", status_url, status=res.status_code)
