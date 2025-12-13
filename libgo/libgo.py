@@ -77,7 +77,9 @@ def _notify(title: str, message: str) -> None:
         if system == "darwin":
             # macOS Notification Center
             # osascript -e 'display notification "message" with title "title"'
-            script = f'display notification "{message.replace("\\\"", "\\\\\\\"")}" with title "{title.replace("\\\"", "\\\\\\\"")}"'
+            msg_esc = message.replace('"', '\\"')
+            title_esc = title.replace('"', '\\"')
+            script = f'display notification "{msg_esc}" with title "{title_esc}"'
             subprocess.run(["osascript", "-e", script], check=False)
             return
 
